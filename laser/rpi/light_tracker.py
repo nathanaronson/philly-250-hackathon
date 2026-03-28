@@ -9,7 +9,7 @@ import tracker_config as cfg
 class LightDetection:
     center_x: int
     center_y: int
-    brightness: float
+    score: float
     area: float
     width: int
     height: int
@@ -17,17 +17,21 @@ class LightDetection:
 
 def detect_light(frame):
     height, width = frame.shape[:2]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (cfg.BLUR_KERNEL, cfg.BLUR_KERNEL), 0)
+    blurred = cv2.GaussianBlur(frame, (cfg.BLUR_KERNEL, cfg.BLUR_KERNEL), 0)
+    blue = blurred[:, :, 0]
+    green = blurred[:, :, 1]
+    red = blurred[:, :, 2]
 
-    _, max_value, _, max_loc = cv2.minMaxLoc(blurred)
+    red_excess = cv2.subtract(red, cv2.max(blue, green))
+    _, max_value, _, max_loc = cv2.minMaxLoc(red_excess)
     annotated = frame.copy()
 
-    if max_value < cfg.MIN_BRIGHTNESS:
+    if max_value < cfg.MIN_RED_EXCESS:
         return None, annotated
 
-    threshold_value = max(cfg.MIN_BRIGHTNESS, int(max_value) - cfg.THRESHOLD_MARGIN)
-    _, mask = cv2.threshold(blurred, threshold_value, 255, cv2.THRESH_BINARY)
+    red_mask = cv2.inRange(red, cfg.MIN_RED_VALUE, 255)
+    excess_mask = cv2.inRange(red_excess, cfg.MIN_RED_EXCESS, 255)
+    mask = cv2.bitwise_and(red_mask, excess_mask)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -52,7 +56,7 @@ def detect_light(frame):
     detection = LightDetection(
         center_x=center_x,
         center_y=center_y,
-        brightness=float(max_value),
+        score=float(max_value),
         area=float(area),
         width=width,
         height=height,

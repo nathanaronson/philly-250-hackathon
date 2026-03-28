@@ -6,6 +6,9 @@ SERVO_MIN_PULSE_US = 900
 SERVO_CENTER_PULSE_US = 1500
 SERVO_MAX_PULSE_US = 2100
 
+# These are positional servos, so the tracker keeps updating the
+# commanded pulse width to hold the camera at a target angle.
+
 # Flip these if the mount moves opposite to the requested direction.
 PAN_INVERT = False
 TILT_INVERT = False
@@ -16,9 +19,9 @@ DEADBAND_Y = 0.08
 PAN_STEP_US = 180
 TILT_STEP_US = 180
 
-# Light detection tuning.
-MIN_BRIGHTNESS = 220
-THRESHOLD_MARGIN = 25
+# Red / IR-light detection tuning.
+MIN_RED_VALUE = 180
+MIN_RED_EXCESS = 60
 MIN_BLOB_AREA = 16
 BLUR_KERNEL = 9
 

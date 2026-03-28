@@ -60,7 +60,7 @@ def main():
             else:
                 cv2.putText(
                     annotated,
-                    "No bright light detected",
+                    "No red IR light detected",
                     (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8,
