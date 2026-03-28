@@ -39,6 +39,4 @@ python main.py
 Controls:
 
 - `Q` or `ESC` quits
-
-Note: servo movement is currently commented out in `main.py` so you can verify
-the tracking direction overlay before re-enabling motor control.
+- `C` re-centers both servos

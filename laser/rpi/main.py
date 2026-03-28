@@ -5,7 +5,7 @@ import cv2
 
 import tracker_config as cfg
 from light_tracker import detect_light
-# from servo_control import PanTiltController
+from servo_control import PanTiltController
 
 
 def _add_cv_camera_to_path():
@@ -46,12 +46,12 @@ def _movement_text(x_error, y_error):
 
 def main():
     camera = open_camera()
-    # controller = PanTiltController()
-    # controller.start()
+    controller = PanTiltController()
+    controller.start()
 
     print("[rpi] Starting light tracker")
     print(f"[rpi] Pan GPIO={cfg.PAN_GPIO_PIN}, Tilt GPIO={cfg.TILT_GPIO_PIN}")
-    print("[rpi] Press Q or ESC to quit")
+    print("[rpi] Press Q or ESC to quit, C to re-center servos")
 
     try:
         while True:
@@ -65,7 +65,7 @@ def main():
             if detection is not None:
                 x_error, y_error = _normalized_error(detection)
                 move_text = _movement_text(x_error, y_error)
-                # controller.update(x_error, y_error)
+                controller.update(x_error, y_error)
                 cv2.putText(
                     annotated,
                     f"x={x_error:+.2f} y={y_error:+.2f}",
@@ -100,13 +100,15 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
+                if key == ord("c"):
+                    controller.center()
             else:
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
 
     finally:
-        # controller.cleanup()
+        controller.cleanup()
         camera.release()
         cv2.destroyAllWindows()
         print("[rpi] Stopped")
