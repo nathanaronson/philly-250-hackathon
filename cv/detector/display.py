@@ -19,15 +19,16 @@ _DIM   = ( 82,  51,  22)   # --border: #163352 — barely-visible box
 
 
 def _is_mine(obj: TrackedObject, clip_scores: dict[int, float], mine_threshold: float) -> bool:
-    """An object is flagged as a mine if confirmed AND either:
-    - CLIP scored it above threshold, OR
-    - CLIP hasn't scored it yet (still loading) — flag conservatively
+    """A confirmed tracked object is flagged as a mine.
+    If CLIP is enabled and has scored it, the score must also pass the threshold.
     """
     if not obj.is_confirmed:
         return False
+    if not config.ENABLE_CLIP:
+        return True  # any confirmed object in frame = mine
     score = clip_scores.get(obj.id)
     if score is None:
-        return True   # CLIP not ready — flag anything confirmed
+        return False  # CLIP enabled but not scored yet — wait
     return score >= mine_threshold
 
 
@@ -104,52 +105,9 @@ def draw_status_bar(
     return out
 
 
-def draw_calibrating(frame: np.ndarray, progress: float) -> np.ndarray:
-    h, w = frame.shape[:2]
-
-    # Dark navy background — matches UI panel color
-    out = np.full_like(frame, (40, 31, 13))  # BGR for #0d1f28
-
-    # Corner brackets in blue
-    _BLUE = (255, 170, 0)  # BGR for #00aaff
-    sz, t = 20, 2
-    for x, y, dx, dy in [(10,10,1,1),(w-10,10,-1,1),(10,h-10,1,-1),(w-10,h-10,-1,-1)]:
-        cv2.line(out, (x, y), (x + dx*sz, y), _BLUE, t)
-        cv2.line(out, (x, y), (x, y + dy*sz), _BLUE, t)
-
-    # Top label — small, dim
-    top = "// AQUASCAN // INITIALIZING SENSOR BASELINE //"
-    (tw, _), _ = cv2.getTextSize(top, cv2.FONT_HERSHEY_PLAIN, 1.0, 1)
-    cv2.putText(out, top, ((w - tw) // 2, 36),
-                cv2.FONT_HERSHEY_PLAIN, 1.0, (100, 80, 30), 1)
-
-    # Main status text
-    msg = "CALIBRATING"
-    (tw, th), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_DUPLEX, 1.6, 3)
-    cv2.putText(out, msg, ((w - tw) // 2, h // 2 - 30),
-                cv2.FONT_HERSHEY_DUPLEX, 1.6, _GREEN, 3)
-
-    # Subtext
-    sub = "HOLD SCENE STILL"
-    (sw, _), _ = cv2.getTextSize(sub, cv2.FONT_HERSHEY_PLAIN, 1.2, 1)
-    cv2.putText(out, sub, ((w - sw) // 2, h // 2 + 10),
-                cv2.FONT_HERSHEY_PLAIN, 1.2, (100, 150, 80), 1)
-
-    # Progress bar
-    bar_x, bar_y = 60, h // 2 + 36
-    bar_w, bar_h = w - 120, 8
-    cv2.rectangle(out, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (60, 50, 20), -1)
-    fill = int(bar_w * progress)
-    if fill > 0:
-        cv2.rectangle(out, (bar_x, bar_y), (bar_x + fill, bar_y + bar_h), _GREEN, -1)
-
-    # Percentage
-    pct = f"{int(progress * 100)}%"
-    (pw, _), _ = cv2.getTextSize(pct, cv2.FONT_HERSHEY_PLAIN, 1.0, 1)
-    cv2.putText(out, pct, ((w - pw) // 2, h // 2 + 60),
-                cv2.FONT_HERSHEY_PLAIN, 1.0, _GREEN, 1)
-
-    return out
+def draw_calibrating(frame: np.ndarray, _progress: float) -> np.ndarray:
+    # Plain dark background — web UI handles all calibration indicators
+    return np.full_like(frame, (30, 15, 6))
 
 
 def render(

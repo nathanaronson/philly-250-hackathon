@@ -125,7 +125,7 @@ def index():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AQUASCAN // THREAT DETECTION</title>
+  <title>PHILLY 250 // BOTTOM MINE DETECTION</title>
   <style>
     :root {
       --green:  #00ff88;
@@ -243,18 +243,6 @@ def index():
     .corner.tr { top:6px;    right:6px;  border-width: 2px 2px 0 0; }
     .corner.bl { bottom:6px; left:6px;   border-width: 0 0 2px 2px; }
     .corner.br { bottom:6px; right:6px;  border-width: 0 2px 2px 0; }
-
-    /* Sweep line */
-    #sweep {
-      position: absolute;
-      left: 0; right: 0;
-      height: 1px;
-      background: linear-gradient(to right, transparent, rgba(0,255,136,0.5), transparent);
-      animation: sweep 4s linear infinite;
-      pointer-events: none;
-      z-index: 2;
-    }
-    @keyframes sweep { from { top: 0%; } to { top: 100%; } }
 
     /* Status badge on video */
     .feed-badge {
@@ -392,7 +380,7 @@ def index():
 <body>
 
 <header>
-  <div class="logo">AQUA<em>SCAN</em> &nbsp;//&nbsp; THREAT DETECTION SYSTEM</div>
+  <div class="logo">PHILLY <em>250</em> &nbsp;//&nbsp; BOTTOM MINE DETECTION</div>
   <div class="header-right">
     <span>SYS&nbsp;<span class="val">ONLINE</span></span>
     <span>FEED&nbsp;<span class="val">LIVE</span></span>
@@ -406,7 +394,6 @@ def index():
     <div class="corner tr"></div>
     <div class="corner bl"></div>
     <div class="corner br"></div>
-    <div id="sweep"></div>
     <div class="feed-badge clear" id="feed-badge">SCANNING</div>
     <img id="feed" src="/frame" alt="feed" />
   </div>
@@ -439,7 +426,7 @@ def index():
 </main>
 
 <footer>
-  <span>AQUASCAN v1.0 // PHILLY 250 HACKATHON</span>
+  <span>PHILLY 250 HACKATHON</span>
   <span id="coords">LAT: ---.---- &nbsp; LON: ---.----</span>
 </footer>
 
@@ -512,13 +499,31 @@ def index():
   setInterval(pollFrame, 33);
 
   // Status polling
-  let prevMines = 0;
+  let prevMines = 0, prevCalibrated = false;
   setInterval(() => {
     fetch('/status').then(r => r.json()).then(data => {
-      const mines   = data.mines   || 0;
-      const objects = data.objects || 0;
+      const mines      = data.mines      || 0;
+      const calibrated = data.calibrated || false;
+      const progress   = data.progress   || 0;
 
-      statObjects.textContent = objects;
+      if (!calibrated) {
+        const pct = Math.round(progress * 100);
+        badge.textContent       = 'CALIBRATING ' + pct + '%';
+        badge.className         = 'feed-badge clear';
+        feedWrap.className      = 'feed-wrap';
+        threatLabel.textContent = 'STANDBY';
+        threatLabel.className   = 'threat-label clear';
+        meterFill.style.width      = pct + '%';
+        meterFill.style.background = 'var(--blue)';
+        prevMines = 0;
+        return;
+      }
+
+      if (!prevCalibrated) {
+        addLog('Calibration complete — scanning', 'ok');
+        prevCalibrated = true;
+      }
+
       statThreats.textContent = mines;
 
       const conf = mines > 0 ? Math.min(55 + mines * 22, 100) : 0;
@@ -576,7 +581,12 @@ def frame():
 def status():
     with _lock:
         mines = _mine_count
-    return jsonify({"mines": mines})
+        det = _detector
+    return jsonify({
+        "mines": mines,
+        "calibrated": det.is_calibrated,
+        "progress": det.calibration_progress,
+    })
 
 
 @app.route("/stream")

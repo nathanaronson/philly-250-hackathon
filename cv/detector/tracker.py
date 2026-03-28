@@ -33,8 +33,8 @@ VELOCITY_SMOOTH = 0.6
 MAX_MISSING_FRAMES = 60
 
 # Frames an object must be *consistently* visible before it is flagged as a threat.
-# Noise blobs vanish within 1-3 frames; a real mine persists. This eliminates flicker.
-CONFIRM_FRAMES = 3
+# Noise blobs vanish within a few frames; a real object persists. This eliminates flicker.
+CONFIRM_FRAMES = 20  # ~0.67s at 30fps — brief splashes / reflections never confirm
 
 
 def _iou(ax, ay, aw, ah, bx, by, bw, bh) -> float:

@@ -56,8 +56,8 @@ class BackgroundDetector:
             varThreshold=config.BG_VAR_THRESHOLD,
             detectShadows=False,
         )
-        # Small kernel: remove speckle noise
-        self._noise_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        # Larger kernel: aggressively suppress water shimmer / speckle noise
+        self._noise_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
         # Merge kernel: close small gaps within a single mine body
         r = config.MERGE_RADIUS
         self._merge_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (r * 2, r * 2))
@@ -101,7 +101,7 @@ class BackgroundDetector:
         detections: list[Detection] = []
         for cnt in contours:
             area = int(cv2.contourArea(cnt))
-            if area < config.MIN_CONTOUR_AREA:
+            if area < config.MIN_CONTOUR_AREA or area > config.MAX_CONTOUR_AREA:
                 continue
 
             # Solidity: how much of the convex hull is filled (mines are solid)
