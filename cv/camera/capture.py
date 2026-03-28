@@ -33,4 +33,15 @@ class Camera:
 
 
 def open_camera() -> Camera:
-    return Camera(index=0)
+    # Try each index; pick the first one that opens AND delivers a real frame.
+    for index in range(32):
+        cap = cv2.VideoCapture(index)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        ok, frame = cap.read()
+        cap.release()
+        if ok and frame is not None and frame.size > 0:
+            print(f"[camera] Found working camera at index {index}")
+            return Camera(index=index)
+    raise RuntimeError("No working camera found. Check that the camera module is connected and enabled.")
