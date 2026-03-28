@@ -111,9 +111,9 @@ Pis using the shared packet/ACK protocol.
 
 Behavior:
 
-- Raspberry Pi 4 sends `1`
-- Raspberry Pi 5 receives and ACKs `1`, then sends `2`
-- Raspberry Pi 4 receives and ACKs `2`, then sends `3`
+- Raspberry Pi 5 sends `1`
+- Raspberry Pi 4 receives and ACKs `1`, then sends `2`
+- Raspberry Pi 5 receives and ACKs `2`, then sends `3`
 - this continues forever
 
 ### Which script runs where
@@ -134,13 +134,13 @@ python pi5_counter_node.py
 
 ### Serial ports assumed by the wrappers
 
-- `pi4_counter_node.py` auto-detects the first `/dev/ttyUSB*` or `/dev/ttyACM*`
-- `pi5_counter_node.py` uses `/dev/serial0`
+- `pi4_counter_node.py` uses `/dev/serial0`
+- `pi5_counter_node.py` auto-detects the first `/dev/ttyUSB*` or `/dev/ttyACM*`
 
 If your radio appears on a different device, edit the `SERIAL_PORT` constant in
 the matching wrapper script.
 
-To verify the USB radio is recognized on the Pi 4, check:
+To verify the USB radio is recognized on the Pi 5, check:
 
 ```bash
 ls /dev/ttyUSB* /dev/ttyACM*
