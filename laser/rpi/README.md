@@ -62,3 +62,10 @@ Run:
 cd laser/rpi
 python radio_receiver.py
 ```
+
+This receiver now uses a framed packet protocol with:
+
+- sequence numbers
+- CRC16 packet validation
+- ACK replies for valid packets
+- noise rejection for invalid / partial UART data

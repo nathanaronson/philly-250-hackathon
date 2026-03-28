@@ -4,8 +4,9 @@ Simple Raspberry Pi UART receiver for the telemetry radio.
 Default behavior:
 - opens the Pi hardware UART on /dev/serial0
 - listens at 57600 baud, 8N1
-- prints clean text messages when newline-terminated ASCII arrives
-- ignores binary / non-printable noise
+- accepts only valid framed packets with CRC16
+- sends ACKs back for each valid data packet
+- ignores random line noise that does not parse as a packet
 
 Run on the Pi:
     python radio_receiver.py
@@ -13,54 +14,61 @@ Run on the Pi:
 
 from __future__ import annotations
 
+from pathlib import Path
 import time
+import sys
 
 import serial
+
+REPO_LASER_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_LASER_DIR))
+
+from radio_protocol import (
+    PACKET_TYPE_ACK,
+    PACKET_TYPE_DATA,
+    PacketParser,
+    build_packet,
+)
 
 
 SERIAL_PORT = "/dev/serial0"
 BAUD_RATE = 57600
 TIMEOUT_SECONDS = 0.2
-MESSAGE_BUFFER_SIZE = 128
-MIN_MESSAGE_LENGTH = 4
-
-
-def _looks_like_text_message(data: bytearray) -> bool:
-    if len(data) < MIN_MESSAGE_LENGTH:
-        return False
-
-    text = data.decode("ascii", errors="ignore").strip()
-    if len(text) < MIN_MESSAGE_LENGTH:
-        return False
-
-    return any(char.isalpha() for char in text)
 
 
 def main() -> None:
-    rx_buffer = bytearray()
+    parser = PacketParser()
 
     print(f"[rpi] Opening {SERIAL_PORT} at {BAUD_RATE} baud")
 
-    with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT_SECONDS) as ser:
+    with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT_SECONDS, write_timeout=0.25) as ser:
         time.sleep(0.25)
         ser.reset_input_buffer()
+        ser.reset_output_buffer()
         print("[rpi] Listening for radio data")
 
         while True:
-            chunk = ser.read(32)
+            chunk = ser.read(64)
             if not chunk:
                 continue
 
-            for byte in chunk:
-                if 32 <= byte <= 126:
-                    if len(rx_buffer) < MESSAGE_BUFFER_SIZE - 1:
-                        rx_buffer.append(byte)
-                elif byte in (ord("\r"), ord("\n")):
-                    if _looks_like_text_message(rx_buffer):
-                        print(f"[rpi] Received message: {rx_buffer.decode('ascii', errors='ignore')}")
-                    rx_buffer.clear()
-                else:
-                    rx_buffer.clear()
+            for packet in parser.feed(chunk):
+                if packet.packet_type == PACKET_TYPE_DATA:
+                    ack = build_packet(PACKET_TYPE_ACK, packet.sequence)
+                    ser.write(ack)
+                    ser.flush()
+
+                    try:
+                        message = packet.payload.decode("utf-8")
+                    except UnicodeDecodeError:
+                        print(
+                            f"[rpi] Received seq={packet.sequence} binary payload "
+                            f"({len(packet.payload)} bytes)"
+                        )
+                    else:
+                        print(f"[rpi] Received seq={packet.sequence} message: {message}")
+                elif packet.packet_type == PACKET_TYPE_ACK:
+                    print(f"[rpi] ACK seq={packet.sequence}")
 
 
 if __name__ == "__main__":
