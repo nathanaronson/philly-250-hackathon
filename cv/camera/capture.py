@@ -29,29 +29,50 @@ class PiCamera:
         self._h = config.FRAME_HEIGHT
         self._frame_bytes = self._w * self._h * 3 // 2  # YUV420 size
 
-        # Try rpicam-vid (Bookworm) then libcamera-vid (Bullseye)
+        base_args = [
+            "--width", str(self._w),
+            "--height", str(self._h),
+            "--framerate", str(config.FRAME_RATE),
+            "--codec", "yuv420",
+            "--output", "-",
+            "--nopreview",
+            "--timeout", "0",
+        ]
+
+        stable_args: list[str] = []
+        if getattr(config, "PI_STABILIZE_CONTROLS", False):
+            stable_args = [
+                "--autofocus-mode", getattr(config, "PI_AF_MODE", "auto"),
+                "--awb", getattr(config, "PI_AWB_MODE", "auto"),
+                "--denoise", getattr(config, "PI_DENOISE_MODE", "cdn_off"),
+            ]
+
+        # Try rpicam-vid (Bookworm) then libcamera-vid (Bullseye).
+        # Start with stabilized controls; if unsupported, retry with base args.
         for cmd in ("rpicam-vid", "libcamera-vid"):
-            try:
-                self._proc = subprocess.Popen(
-                    [
-                        cmd,
-                        "--width",     str(self._w),
-                        "--height",    str(self._h),
-                        "--framerate", str(config.FRAME_RATE),
-                        "--codec",     "yuv420",
-                        "--output",    "-",
-                        "--nopreview",
-                        "--timeout",   "0",
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                )
-                print(f"[camera] Started {cmd} pipeline — waiting for autofocus...")
-                time.sleep(2)  # Camera Module 3 needs time to initialize autofocus
-                print("[camera] Ready")
-                return
-            except FileNotFoundError:
-                continue
+            for extra in (stable_args, []):
+                try:
+                    args = [cmd, *base_args, *extra]
+                    proc = subprocess.Popen(
+                        args,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+
+                    time.sleep(0.8)
+                    if proc.poll() is not None:
+                        err = (proc.stderr.read() or b"").decode("utf-8", errors="ignore").strip()
+                        if extra:
+                            print(f"[camera] {cmd} rejected stabilized args, falling back: {err[:120]}")
+                        continue
+
+                    self._proc = proc
+                    print(f"[camera] Started {cmd} pipeline")
+                    time.sleep(1.5)  # let controls settle before first read
+                    print("[camera] Ready")
+                    return
+                except FileNotFoundError:
+                    break
         raise RuntimeError("Neither rpicam-vid nor libcamera-vid found. Is the camera enabled?")
 
     def read(self) -> tuple[bool, np.ndarray]:

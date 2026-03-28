@@ -1,8 +1,12 @@
 """
-Background-subtraction + gray-color detector for duct-tape-roll detection.
+Background + gray-appearance detector tuned for gray duct tape objects.
 
-Combines MOG2 (what changed?) with an HSV gray filter (what looks like duct tape?)
-so only NEW GRAY objects trigger a detection. Processes at half resolution for speed.
+Pipeline:
+  1. MOG2 gives moving foreground at half resolution for speed.
+  2. Gray appearance masks (HSV low saturation + LAB near-neutral chroma)
+     indicate tape-like pixels.
+  3. Contours are found on foreground, then scored by how gray they are and
+     how non-skin they are, so faces/hands are rejected.
 """
 
 from dataclasses import dataclass
@@ -32,7 +36,7 @@ class BackgroundDetector:
             detectShadows=False,
         )
         self._open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        self._close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
+        self._close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
         self._calibration_start = time.monotonic()
         self.debug_mask: np.ndarray | None = None
 
@@ -45,70 +49,111 @@ class BackgroundDetector:
         elapsed = time.monotonic() - self._calibration_start
         return min(elapsed / config.CALIBRATION_SECONDS, 1.0)
 
-    def process(self, frame: np.ndarray) -> list[Detection]:
-        h, w = frame.shape[:2]
-        small = cv2.resize(frame, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
-        small_blur = cv2.GaussianBlur(small, (5, 5), 0)
+    @staticmethod
+    def _clip01(value: float) -> float:
+        return max(0.0, min(1.0, value))
 
-        if not self.is_calibrated:
-            self._mog.apply(small_blur, learningRate=0.05)
-            self.debug_mask = np.zeros((h, w), dtype=np.uint8)
-            return []
-
-        # What changed from background
-        fg_mask = self._mog.apply(small_blur, learningRate=config.BG_LEARN_RATE)
-
-        # What looks gray (duct tape color) — low saturation, medium brightness
-        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-        gray_mask = cv2.inRange(
+    def _gray_and_skin_masks(self, frame_small: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        hsv = cv2.cvtColor(frame_small, cv2.COLOR_BGR2HSV)
+        gray_hsv = cv2.inRange(
             hsv,
             (0, 0, config.GRAY_V_MIN),
             (180, config.GRAY_S_MAX, config.GRAY_V_MAX),
         )
 
-        # Only keep pixels that are BOTH new AND gray
-        combined = cv2.bitwise_and(fg_mask, gray_mask)
+        lab = cv2.cvtColor(frame_small, cv2.COLOR_BGR2LAB)
+        a = lab[:, :, 1]
+        b = lab[:, :, 2]
+        neutral_a = cv2.inRange(a, 128 - config.GRAY_AB_MAX, 128 + config.GRAY_AB_MAX)
+        neutral_b = cv2.inRange(b, 128 - config.GRAY_AB_MAX, 128 + config.GRAY_AB_MAX)
+        gray_lab = cv2.bitwise_and(neutral_a, neutral_b)
 
-        # Cleanup
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, self._open_kernel)
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, self._close_kernel)
+        gray_mask = cv2.bitwise_and(gray_hsv, gray_lab)
 
-        # Kill edge artifacts
-        m = config.EDGE_MARGIN
-        sh, sw = combined.shape[:2]
-        combined[:m, :] = 0
-        combined[sh - m:, :] = 0
-        combined[:, :m] = 0
-        combined[:, sw - m:] = 0
+        # Broad skin-tone window in HSV; used only as a reject signal.
+        skin_mask = cv2.inRange(hsv, (0, 25, 35), (25, 220, 255))
+        return gray_mask, skin_mask
 
-        self.debug_mask = cv2.resize(combined, (w, h), interpolation=cv2.INTER_NEAREST)
+    def process(self, frame: np.ndarray) -> list[Detection]:
+        full_h, full_w = frame.shape[:2]
+        small = cv2.resize(frame, (full_w // 2, full_h // 2), interpolation=cv2.INTER_AREA)
+        small_blur = cv2.GaussianBlur(small, (5, 5), 0)
 
-        contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not self.is_calibrated:
+            self._mog.apply(small_blur, learningRate=0.05)
+            self.debug_mask = np.zeros((full_h, full_w), dtype=np.uint8)
+            return []
+
+        fg_raw = self._mog.apply(small_blur, learningRate=config.BG_LEARN_RATE)
+        fg_mask = cv2.morphologyEx(fg_raw, cv2.MORPH_OPEN, self._open_kernel)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._close_kernel)
+
+        margin = config.EDGE_MARGIN
+        small_h, small_w = fg_mask.shape[:2]
+        fg_mask[:margin, :] = 0
+        fg_mask[small_h - margin :, :] = 0
+        fg_mask[:, :margin] = 0
+        fg_mask[:, small_w - margin :] = 0
+
+        gray_mask, skin_mask = self._gray_and_skin_masks(small)
+        debug_small = cv2.bitwise_and(fg_mask, gray_mask)
+        self.debug_mask = cv2.resize(debug_small, (full_w, full_h), interpolation=cv2.INTER_NEAREST)
+
+        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         detections: list[Detection] = []
         for cnt in contours:
-            area = cv2.contourArea(cnt)
+            area = float(cv2.contourArea(cnt))
             if not (config.MIN_CONTOUR_AREA <= area <= config.MAX_CONTOUR_AREA):
                 continue
 
-            bx, by, bw, bh = cv2.boundingRect(cnt)
-            aspect = min(bw, bh) / max(bw, bh) if max(bw, bh) > 0 else 0
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect = min(w, h) / max(w, h) if max(w, h) > 0 else 0.0
             if aspect < config.MIN_ASPECT_RATIO:
                 continue
 
-            fill = area / (bw * bh) if bw * bh > 0 else 0
-            if fill < 0.20:
+            perimeter = cv2.arcLength(cnt, True)
+            circularity = (4 * np.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
+            if circularity < config.MIN_CIRCULARITY:
                 continue
 
-            confidence = round(0.5 * fill + 0.5 * aspect, 3)
+            contour_mask = np.zeros_like(fg_mask)
+            cv2.drawContours(contour_mask, [cnt], -1, 255, thickness=-1)
+            pixels = float(cv2.countNonZero(contour_mask))
+            if pixels <= 0:
+                continue
 
-            # Scale back to full resolution
-            detections.append(Detection(
-                x=bx * 2, y=by * 2,
-                w=bw * 2, h=bh * 2,
-                confidence=confidence,
-                area=int(area * 4),
-            ))
+            gray_pixels = cv2.countNonZero(cv2.bitwise_and(gray_mask, contour_mask))
+            skin_pixels = cv2.countNonZero(cv2.bitwise_and(skin_mask, contour_mask))
+            gray_ratio = gray_pixels / pixels
+            skin_ratio = skin_pixels / pixels
 
-        detections.sort(key=lambda d: d.area, reverse=True)
+            if gray_ratio < config.MIN_GRAY_RATIO:
+                continue
+            if skin_ratio > config.MAX_SKIN_RATIO:
+                continue
+
+            fill = area / float(w * h) if w * h > 0 else 0.0
+            confidence = round(
+                (
+                    0.45 * self._clip01(gray_ratio)
+                    + 0.20 * self._clip01(aspect)
+                    + 0.20 * self._clip01(fill)
+                    + 0.15 * self._clip01(circularity)
+                ),
+                3,
+            )
+
+            detections.append(
+                Detection(
+                    x=x * 2,
+                    y=y * 2,
+                    w=w * 2,
+                    h=h * 2,
+                    confidence=confidence,
+                    area=int(area * 4),
+                )
+            )
+
+        detections.sort(key=lambda d: (d.confidence, d.area), reverse=True)
         return detections[:3]

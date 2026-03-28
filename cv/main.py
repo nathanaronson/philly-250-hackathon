@@ -35,6 +35,8 @@ _clip: CLIPClassifier | None = None   # loaded in background; None until ready
 _clip_scores: dict[int, float] = {}
 _mine_count: int = 0   # number of confirmed mines in current frame
 _object_count: int = 0
+_frame_total: int = 0
+_capture_fps: float = 0.0
 
 
 def _load_clip():
@@ -46,10 +48,14 @@ def _load_clip():
 
 def _capture_loop():
     global _latest_frame, _latest_mask, _detector, _tracker, _clip_scores, _mine_count, _object_count
+    global _frame_total, _capture_fps
     import traceback
 
     camera = open_camera()
     _calibration_announced = False
+    fps_counter = 0
+    fps_window_start = time.monotonic()
+    measured_fps = 0.0
 
     while True:
         try:
@@ -105,11 +111,20 @@ def _capture_loop():
 
             mines = [o for o in objects if _is_mine(o, _clip_scores, MINE_THRESHOLD)]
 
+            fps_counter += 1
+            now = time.monotonic()
+            if now - fps_window_start >= 1.0:
+                measured_fps = fps_counter / (now - fps_window_start)
+                fps_counter = 0
+                fps_window_start = now
+
             with _lock:
                 _latest_frame = frame_jpeg.tobytes()
                 _latest_mask = mask_bytes
                 _mine_count = len(mines)
                 _object_count = len(objects)
+                _frame_total += 1
+                _capture_fps = measured_fps
 
         except Exception:
             traceback.print_exc()
@@ -405,7 +420,7 @@ def index():
     <div class="corner bl"></div>
     <div class="corner br"></div>
     <div class="feed-badge clear" id="feed-badge">SCANNING</div>
-    <img id="feed" src="/frame" alt="feed" />
+    <img id="feed" src="/stream" alt="feed" />
   </div>
 
   <div class="sidebar">
@@ -493,30 +508,12 @@ def index():
     if (++logCount > 40) log.lastChild?.remove();
   }
 
-  // Frame polling — wait for each image to load before requesting the next
-  let frameCount = 0, lastFpsTime = Date.now(), totalFrames = 0;
-  function pollFrame() {
-    const t = Date.now();
-    const img = new Image();
-    img.onload = function() {
-      feedImg.src = img.src;
-      frameCount++;
-      totalFrames++;
-      statFrames.textContent = totalFrames;
-      const now = Date.now();
-      if (now - lastFpsTime >= 1000) {
-        statFps.textContent = Math.round(frameCount * 1000 / (now - lastFpsTime));
-        frameCount = 0;
-        lastFpsTime = now;
-      }
-      pollFrame();
-    };
-    img.onerror = function() {
-      setTimeout(pollFrame, 200);
-    };
-    img.src = '/frame?t=' + t;
+  // Use MJPEG stream for smoother playback and lower Pi overhead.
+  function startStream() {
+    feedImg.src = '/stream?t=' + Date.now();
   }
-  pollFrame();
+  feedImg.onerror = () => { setTimeout(startStream, 300); };
+  startStream();
 
   // Status polling
   let prevMines = 0, prevCalibrated = false;
@@ -524,10 +521,14 @@ def index():
     fetch('/status').then(r => r.json()).then(data => {
       const objects    = data.objects    || 0;
       const mines      = data.mines      || 0;
+      const frames     = data.frames     || 0;
+      const fps        = data.fps        || 0;
       const calibrated = data.calibrated || false;
       const progress   = data.progress   || 0;
 
       statObjects.textContent = objects;
+      statFrames.textContent = frames;
+      statFps.textContent = fps > 0 ? fps.toFixed(1) : '--';
 
       if (!calibrated) {
         const pct = Math.round(progress * 100);
@@ -605,10 +606,14 @@ def status():
     with _lock:
         mines = _mine_count
         objects = _object_count
+        frames = _frame_total
+        fps = _capture_fps
         det = _detector
     return jsonify({
         "objects": objects,
         "mines": mines,
+        "frames": frames,
+        "fps": fps,
         "calibrated": det.is_calibrated,
         "progress": det.calibration_progress,
     })
@@ -632,13 +637,15 @@ def debug():
 
 @app.route("/reset")
 def reset():
-    global _detector, _tracker, _clip_scores, _object_count, _mine_count
+    global _detector, _tracker, _clip_scores, _object_count, _mine_count, _frame_total, _capture_fps
     with _lock:
         _detector = BackgroundDetector()
         _tracker = ObjectTracker()
         _clip_scores = {}
         _object_count = 0
         _mine_count = 0
+        _frame_total = 0
+        _capture_fps = 0.0
     print("[main] Reset — keep scene empty for calibration.")
     return redirect("/")
 
