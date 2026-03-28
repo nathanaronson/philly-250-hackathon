@@ -3,9 +3,9 @@ Simple Raspberry Pi UART receiver for the telemetry radio.
 
 Default behavior:
 - opens the Pi hardware UART on /dev/serial0
-- listens at 9600 baud, 8N1
+- listens at 57600 baud, 8N1
 - prints clean text messages when newline-terminated ASCII arrives
-- prints "Received data" if binary / non-printable bytes arrive
+- ignores binary / non-printable noise
 
 Run on the Pi:
     python radio_receiver.py
@@ -22,16 +22,28 @@ SERIAL_PORT = "/dev/serial0"
 BAUD_RATE = 57600
 TIMEOUT_SECONDS = 0.2
 MESSAGE_BUFFER_SIZE = 128
+MIN_MESSAGE_LENGTH = 4
+
+
+def _looks_like_text_message(data: bytearray) -> bool:
+    if len(data) < MIN_MESSAGE_LENGTH:
+        return False
+
+    text = data.decode("ascii", errors="ignore").strip()
+    if len(text) < MIN_MESSAGE_LENGTH:
+        return False
+
+    return any(char.isalpha() for char in text)
 
 
 def main() -> None:
     rx_buffer = bytearray()
-    saw_binary_data = False
 
     print(f"[rpi] Opening {SERIAL_PORT} at {BAUD_RATE} baud")
 
     with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT_SECONDS) as ser:
         time.sleep(0.25)
+        ser.reset_input_buffer()
         print("[rpi] Listening for radio data")
 
         while True:
@@ -41,25 +53,14 @@ def main() -> None:
 
             for byte in chunk:
                 if 32 <= byte <= 126:
-                    if saw_binary_data:
-                        print("[rpi] Received data")
-                        saw_binary_data = False
-
                     if len(rx_buffer) < MESSAGE_BUFFER_SIZE - 1:
                         rx_buffer.append(byte)
                 elif byte in (ord("\r"), ord("\n")):
-                    if rx_buffer:
+                    if _looks_like_text_message(rx_buffer):
                         print(f"[rpi] Received message: {rx_buffer.decode('ascii', errors='ignore')}")
-                        rx_buffer.clear()
-                    elif saw_binary_data:
-                        print("[rpi] Received data")
-                        saw_binary_data = False
+                    rx_buffer.clear()
                 else:
-                    if rx_buffer:
-                        print(f"[rpi] Received message: {rx_buffer.decode('ascii', errors='ignore')}")
-                        rx_buffer.clear()
-
-                    saw_binary_data = True
+                    rx_buffer.clear()
 
 
 if __name__ == "__main__":
