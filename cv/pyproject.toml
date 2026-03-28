@@ -13,4 +13,6 @@ dependencies = [
     # "torchvision>=0.15.0",
     # "transformers>=4.40.0",
     # "ultralytics>=8.0.0",
+    "onnx>=1.19.1",
+    "onnxslim>=0.1.90",
 ]
