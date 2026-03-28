@@ -20,6 +20,34 @@ import onnxruntime as ort
 import config
 
 
+def _ensure_onnx(onnx_path: str, imgsz: int) -> str:
+    """Return onnx_path if it exists; otherwise export it from the .pt weights."""
+    import os
+    if os.path.exists(onnx_path):
+        return onnx_path
+
+    # Derive the .pt filename (yolov8n.onnx → yolov8n.pt)
+    pt_path = onnx_path.replace(".onnx", ".pt")
+    print(f"[detector] {onnx_path} not found — exporting from {pt_path} …")
+    print("[detector] This takes ~30 s and only runs once.")
+    try:
+        from ultralytics import YOLO as _YOLO
+    except ImportError:
+        raise RuntimeError(
+            f"{onnx_path} not found and ultralytics is not installed.\n"
+            "Either:\n"
+            "  1. Run on another machine:  "
+            f"python -c \"from ultralytics import YOLO; YOLO('{pt_path}').export(format='onnx', imgsz={imgsz})\"\n"
+            "     then copy the .onnx file here.\n"
+            "  2. Install ultralytics:  uv add ultralytics torch torchvision"
+        )
+    _YOLO(pt_path).export(format="onnx", imgsz=imgsz)
+    if not os.path.exists(onnx_path):
+        raise RuntimeError(f"Export finished but {onnx_path} still not found.")
+    print(f"[detector] Exported {onnx_path}")
+    return onnx_path
+
+
 @dataclass
 class Detection:
     x: int
@@ -35,12 +63,13 @@ class BackgroundDetector:
 
     def __init__(self):
         if BackgroundDetector._session is None:
-            print(f"[detector] Loading {config.YOLO_MODEL} …")
+            model_path = _ensure_onnx(config.YOLO_MODEL, config.YOLO_IMGSZ)
+            print(f"[detector] Loading {model_path} …")
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = config.YOLO_THREADS
             opts.inter_op_num_threads = 1
             BackgroundDetector._session = ort.InferenceSession(
-                config.YOLO_MODEL,
+                model_path,
                 sess_options=opts,
                 providers=["CPUExecutionProvider"],
             )
