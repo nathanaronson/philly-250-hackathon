@@ -7,6 +7,8 @@ Pipeline:
      indicate tape-like pixels.
   3. Contours are found on foreground, then scored by how gray they are and
      how non-skin they are, so faces/hands are rejected.
+  4. If no gray-tape candidate is found, fall back to generic "new object"
+     contour detection so any foreign object in frame can still be tracked.
 """
 
 from dataclasses import dataclass
@@ -86,6 +88,8 @@ class BackgroundDetector:
         contour_source: np.ndarray,
         gray_mask: np.ndarray,
         skin_mask: np.ndarray,
+        require_gray: bool,
+        reject_skin: bool,
     ) -> list[Detection]:
         contours, _ = cv2.findContours(
             contour_source, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -118,21 +122,35 @@ class BackgroundDetector:
             gray_ratio = gray_pixels / pixels
             skin_ratio = skin_pixels / pixels
 
-            if gray_ratio < config.MIN_GRAY_RATIO:
+            if require_gray and gray_ratio < config.MIN_GRAY_RATIO:
                 continue
-            if skin_ratio > config.MAX_SKIN_RATIO:
+            if reject_skin and skin_ratio > config.MAX_SKIN_RATIO:
                 continue
 
             fill = area / float(w * h) if w * h > 0 else 0.0
-            confidence = round(
-                (
-                    0.48 * self._clip01(gray_ratio)
-                    + 0.18 * self._clip01(aspect)
-                    + 0.18 * self._clip01(fill)
-                    + 0.16 * self._clip01(circularity)
-                ),
-                3,
-            )
+            if fill < config.FALLBACK_MIN_FILL:
+                continue
+
+            if require_gray:
+                confidence = round(
+                    (
+                        0.48 * self._clip01(gray_ratio)
+                        + 0.18 * self._clip01(aspect)
+                        + 0.18 * self._clip01(fill)
+                        + 0.16 * self._clip01(circularity)
+                    ),
+                    3,
+                )
+            else:
+                confidence = round(
+                    (
+                        0.40 * self._clip01(fill)
+                        + 0.30 * self._clip01(aspect)
+                        + 0.20 * self._clip01(circularity)
+                        + 0.10 * self._clip01(gray_ratio * 2)
+                    ),
+                    3,
+                )
             detections.append(
                 Detection(
                     x=x * 2,
@@ -169,13 +187,25 @@ class BackgroundDetector:
         gray_mask, skin_mask = self._gray_and_skin_masks(small)
         target_mask = cv2.bitwise_and(fg_mask, gray_mask)
         target_mask = cv2.morphologyEx(target_mask, cv2.MORPH_CLOSE, self._target_close_kernel)
-        debug_small = target_mask
+        debug_small = target_mask if cv2.countNonZero(target_mask) > 0 else fg_mask
         self.debug_mask = cv2.resize(debug_small, (full_w, full_h), interpolation=cv2.INTER_NEAREST)
 
-        detections = self._contour_detections(target_mask, gray_mask, skin_mask)
+        detections = self._contour_detections(
+            target_mask,
+            gray_mask,
+            skin_mask,
+            require_gray=True,
+            reject_skin=True,
+        )
         if not detections:
-            # Fallback: if intersection misses, still allow motion contours that are gray-ish.
-            detections = self._contour_detections(fg_mask, gray_mask, skin_mask)
+            # Fallback: detect any compact foreign object introduced after calibration.
+            detections = self._contour_detections(
+                fg_mask,
+                gray_mask,
+                skin_mask,
+                require_gray=False,
+                reject_skin=True,
+            )
 
         detections.sort(key=lambda d: (d.confidence, d.area), reverse=True)
         return detections[:3]
