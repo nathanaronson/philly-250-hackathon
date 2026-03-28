@@ -9,6 +9,7 @@ On any other machine (dev laptop) we fall back to cv2.VideoCapture (webcam).
 """
 
 import subprocess
+import time
 import cv2
 import numpy as np
 import config
@@ -45,7 +46,9 @@ class PiCamera:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                 )
-                print(f"[camera] Started {cmd} pipeline")
+                print(f"[camera] Started {cmd} pipeline — waiting for autofocus...")
+                time.sleep(2)  # Camera Module 3 needs time to initialize autofocus
+                print("[camera] Ready")
                 return
             except FileNotFoundError:
                 continue
