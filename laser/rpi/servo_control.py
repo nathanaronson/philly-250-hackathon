@@ -65,6 +65,10 @@ class PanTiltController:
         self.pan.center()
         self.tilt.center()
 
+    def nudge_tilt_up_test(self):
+        # Positive movement on tilt is currently treated as "up" for this mount.
+        self.tilt.move_by(cfg.TILT_TEST_NUDGE_US)
+
     def update(self, x_error, y_error):
         pan_delta = int(cfg.PAN_STEP_US * x_error)
         tilt_delta = int(cfg.TILT_STEP_US * y_error)

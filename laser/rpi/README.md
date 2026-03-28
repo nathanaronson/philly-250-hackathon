@@ -1,19 +1,19 @@
 # Raspberry Pi Light Tracker
 
-This folder contains a simple pan/tilt light tracker for the Raspberry Pi.
+This folder currently contains a simple servo direction test for the Raspberry Pi.
 
 ## What it does
 
-- reuses the existing camera module code from `cv/camera/capture.py`
-- detects the brightest red light spot in the frame
-- can move two positional servos to keep that light near the image center
+- centers both servos
+- nudges the tilt servo very slightly in the currently configured "up" direction
+- helps verify whether `TILT_INVERT` needs to be flipped
 
 ## Default GPIO pins
 
 - pan servo signal: `GPIO 18`
 - tilt servo signal: `GPIO 19`
 
-Edit `tracker_config.py` to change pins, servo range, or detection tuning.
+Edit `tracker_config.py` to change pins, servo range, or the size of the test nudge.
 
 ## Wiring
 
@@ -36,7 +36,29 @@ cd laser/rpi
 python main.py
 ```
 
-Controls:
+## UART Receiver
 
-- `Q` or `ESC` quits
-- `C` re-centers both servos
+Use `radio_receiver.py` if you want the Raspberry Pi to talk directly to the
+radio air module over UART instead of using the ATmega.
+
+### Raspberry Pi UART pins
+
+- Pi `GPIO 15 / RXD0` (physical pin 10) <- radio `TX`
+- Pi `GPIO 14 / TXD0` (physical pin 8) -> radio `RX`
+- Pi `GND` (for example physical pin 6) -> radio `GND`
+
+Important:
+
+- `TX` crosses to `RX`
+- grounds must be shared
+- the Pi UART is `3.3V` logic, so do not feed it a `5V` UART signal
+
+On the Pi, make sure the hardware UART is enabled and the Linux serial console
+is disabled on that UART, otherwise the port may be busy.
+
+Run:
+
+```bash
+cd laser/rpi
+python radio_receiver.py
+```

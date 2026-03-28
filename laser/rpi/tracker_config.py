@@ -19,6 +19,10 @@ DEADBAND_Y = 0.08
 PAN_STEP_US = 180
 TILT_STEP_US = 180
 
+# Simple direction-test behavior.
+TILT_TEST_NUDGE_US = 60
+TEST_SETTLE_SECONDS = 1.0
+
 # Bright red-light detection tuning.
 MIN_RED_VALUE = 170
 MIN_RED_EXCESS = 35

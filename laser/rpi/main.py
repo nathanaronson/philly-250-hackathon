@@ -1,116 +1,31 @@
-from pathlib import Path
-import sys
-
-import cv2
+import time
 
 import tracker_config as cfg
-from light_tracker import detect_light
 from servo_control import PanTiltController
 
 
-def _add_cv_camera_to_path():
-    repo_root = Path(__file__).resolve().parents[2]
-    cv_dir = repo_root / "cv"
-    sys.path.insert(0, str(cv_dir))
-
-
-_add_cv_camera_to_path()
-from camera.capture import open_camera  # noqa: E402
-
-
-def _normalized_error(detection):
-    half_width = detection.width / 2.0
-    half_height = detection.height / 2.0
-
-    x_error = (detection.center_x - half_width) / half_width
-    y_error = (detection.center_y - half_height) / half_height
-    return x_error, y_error
-
-
-def _movement_text(x_error, y_error):
-    horizontal = "HOLD"
-    vertical = "HOLD"
-
-    if x_error <= -cfg.DEADBAND_X:
-        horizontal = "MOVE LEFT"
-    elif x_error >= cfg.DEADBAND_X:
-        horizontal = "MOVE RIGHT"
-
-    if y_error <= -cfg.DEADBAND_Y:
-        vertical = "MOVE UP"
-    elif y_error >= cfg.DEADBAND_Y:
-        vertical = "MOVE DOWN"
-
-    return f"{horizontal} | {vertical}"
-
-
 def main():
-    camera = open_camera()
     controller = PanTiltController()
     controller.start()
 
-    print("[rpi] Starting light tracker")
+    # This mode is only for checking the tilt-servo direction.
+    # It centers both servos, waits briefly, then nudges tilt a tiny amount.
+    print("[rpi] Starting servo direction test")
     print(f"[rpi] Pan GPIO={cfg.PAN_GPIO_PIN}, Tilt GPIO={cfg.TILT_GPIO_PIN}")
-    print("[rpi] Press Q or ESC to quit, C to re-center servos")
+    print("[rpi] Centering servos")
 
     try:
-        while True:
-            ok, frame = camera.read()
-            if not ok or frame is None:
-                print("[rpi] Camera read failed")
-                break
+        time.sleep(cfg.TEST_SETTLE_SECONDS)
 
-            detection, annotated = detect_light(frame)
+        print(f"[rpi] Nudging tilt by +{cfg.TILT_TEST_NUDGE_US} us")
+        print("[rpi] This is the currently configured UP direction")
+        controller.nudge_tilt_up_test()
 
-            if detection is not None:
-                x_error, y_error = _normalized_error(detection)
-                move_text = _movement_text(x_error, y_error)
-                controller.update(x_error, y_error)
-                cv2.putText(
-                    annotated,
-                    f"x={x_error:+.2f} y={y_error:+.2f}",
-                    (20, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 0),
-                    2,
-                )
-                cv2.putText(
-                    annotated,
-                    move_text,
-                    (20, 65),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 255),
-                    2,
-                )
-            else:
-                cv2.putText(
-                    annotated,
-                    "No bright light detected",
-                    (20, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 0, 255),
-                    2,
-                )
-
-            if cfg.SHOW_WINDOW:
-                cv2.imshow(cfg.WINDOW_NAME, annotated)
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), 27):
-                    break
-                if key == ord("c"):
-                    controller.center()
-            else:
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), 27):
-                    break
+        # Hold position for a moment so the movement is easy to see.
+        time.sleep(cfg.TEST_SETTLE_SECONDS)
 
     finally:
         controller.cleanup()
-        camera.release()
-        cv2.destroyAllWindows()
         print("[rpi] Stopped")
 
 
