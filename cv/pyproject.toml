@@ -2,7 +2,7 @@
 name = "philly-250-hackathon"
 version = "0.1.0"
 description = "Real-time underwater object detection using background subtraction"
-requires-python = ">=3.12"
+requires-python = ">=3.9"
 dependencies = [
     "opencv-python>=4.13.0.92",
 ]
