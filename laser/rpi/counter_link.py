@@ -11,21 +11,30 @@ import serial
 LASER_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LASER_DIR))
 
-from radio_protocol import PACKET_TYPE_ACK, PACKET_TYPE_DATA, PacketParser, build_packet
+from radio_protocol import (
+    PACKET_TYPE_ACK,
+    PACKET_TYPE_DATA,
+    PACKET_TYPE_HELLO,
+    PacketParser,
+    build_packet,
+)
 
 
 BAUD_RATE = 57600
 ACK_TIMEOUT_SECONDS = 0.30
 MAX_RETRIES = 5
+HELLO_INTERVAL_SECONDS = 1.0
+COUNTER_RETRY_INTERVAL_SECONDS = 1.0
 
 
 def send_with_ack(
     ser: serial.Serial,
     parser: PacketParser,
+    packet_type: int,
     tx_sequence: int,
     payload_text: str,
 ) -> bool:
-    packet = build_packet(PACKET_TYPE_DATA, tx_sequence, payload_text.encode("ascii"))
+    packet = build_packet(packet_type, tx_sequence, payload_text.encode("ascii"))
 
     for attempt in range(1, MAX_RETRIES + 1):
         ser.write(packet)
@@ -43,7 +52,7 @@ def send_with_ack(
                     print(f"[link] ACK seq={tx_sequence}")
                     return True
 
-                if packet_in.packet_type == PACKET_TYPE_DATA:
+                if packet_in.packet_type in (PACKET_TYPE_DATA, PACKET_TYPE_HELLO):
                     ack = build_packet(PACKET_TYPE_ACK, packet_in.sequence)
                     ser.write(ack)
                     ser.flush()
@@ -64,6 +73,9 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
     packet_parser = PacketParser()
     tx_sequence = 0
     next_value_to_send = start_value
+    initial_counter_sent = False
+    next_hello_deadline = 0.0
+    next_counter_deadline = 0.0
 
     print(f"[{name}] Opening {port} at {BAUD_RATE} baud")
 
@@ -72,16 +84,26 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
         ser.reset_input_buffer()
         ser.reset_output_buffer()
 
-        if initiator:
-            if send_with_ack(ser, packet_parser, tx_sequence, str(next_value_to_send)):
-                next_value_to_send += 2
-                tx_sequence = (tx_sequence + 1) & 0xFF
-            else:
-                print(f"[{name}] Failed to deliver initial value")
-
         print(f"[{name}] Listening for counter packets")
 
         while True:
+            now = time.monotonic()
+
+            if now >= next_hello_deadline:
+                if send_with_ack(ser, packet_parser, PACKET_TYPE_HELLO, tx_sequence, f"HELLO,{name}"):
+                    tx_sequence = (tx_sequence + 1) & 0xFF
+                next_hello_deadline = now + HELLO_INTERVAL_SECONDS
+
+            if initiator and (not initial_counter_sent) and now >= next_counter_deadline:
+                if send_with_ack(ser, packet_parser, PACKET_TYPE_DATA, tx_sequence, str(next_value_to_send)):
+                    next_value_to_send += 2
+                    tx_sequence = (tx_sequence + 1) & 0xFF
+                    initial_counter_sent = True
+                else:
+                    print(f"[{name}] Failed to deliver initial value")
+
+                next_counter_deadline = now + COUNTER_RETRY_INTERVAL_SECONDS
+
             incoming = ser.read(64)
             if not incoming:
                 continue
@@ -97,9 +119,22 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
 
                 try:
                     text = packet_in.payload.decode("ascii")
-                    received_value = int(text)
-                except (UnicodeDecodeError, ValueError):
+                except UnicodeDecodeError:
                     print(f"[{name}] Ignored invalid payload")
+                    continue
+
+                if packet_in.packet_type == PACKET_TYPE_HELLO:
+                    print(f"[{name}] Received HELLO from peer: {text}")
+                    continue
+
+                if packet_in.packet_type != PACKET_TYPE_DATA:
+                    print(f"[{name}] Ignored packet type {packet_in.packet_type}")
+                    continue
+
+                try:
+                    received_value = int(text)
+                except ValueError:
+                    print(f"[{name}] Ignored invalid counter payload: {text}")
                     continue
 
                 print(f"[{name}] Received value {received_value}")
@@ -112,9 +147,10 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
                     )
                     continue
 
-                if send_with_ack(ser, packet_parser, tx_sequence, str(next_value_to_send)):
+                if send_with_ack(ser, packet_parser, PACKET_TYPE_DATA, tx_sequence, str(next_value_to_send)):
                     next_value_to_send += 2
                     tx_sequence = (tx_sequence + 1) & 0xFF
+                    initial_counter_sent = True
                 else:
                     print(f"[{name}] Failed to deliver {next_value_to_send}")
 

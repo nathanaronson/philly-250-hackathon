@@ -134,8 +134,16 @@ python pi5_counter_node.py
 
 ### Serial ports assumed by the wrappers
 
-- `pi4_counter_node.py` uses `/dev/ttyUSB0`
+- `pi4_counter_node.py` auto-detects the first `/dev/ttyUSB*` or `/dev/ttyACM*`
 - `pi5_counter_node.py` uses `/dev/serial0`
 
 If your radio appears on a different device, edit the `SERIAL_PORT` constant in
 the matching wrapper script.
+
+To verify the USB radio is recognized on the Pi 4, check:
+
+```bash
+ls /dev/ttyUSB* /dev/ttyACM*
+dmesg | tail -n 50
+lsusb
+```
