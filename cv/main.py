@@ -46,66 +46,74 @@ def _load_clip():
 
 def _capture_loop():
     global _latest_frame, _latest_mask, _detector, _tracker, _clip_scores, _mine_count, _object_count
+    import traceback
+
     camera = open_camera()
     _calibration_announced = False
 
     while True:
-        ok, frame = camera.read()
-        if not ok or frame is None:
-            continue
+        try:
+            ok, frame = camera.read()
+            if not ok or frame is None:
+                time.sleep(0.01)
+                continue
 
-        with _lock:
-            det = _detector
-            trk = _tracker
-            clip = _clip
+            with _lock:
+                det = _detector
+                trk = _tracker
+                clip = _clip
 
-        detections = det.process(frame)
+            detections = det.process(frame)
 
-        # Announce once when calibration finishes
-        if det.is_calibrated and not _calibration_announced:
-            print("[detector] Calibration complete — show object now")
-            _calibration_announced = True
+            # Announce once when calibration finishes
+            if det.is_calibrated and not _calibration_announced:
+                print("[detector] Calibration complete — show object now")
+                _calibration_announced = True
 
-        objects = trk.update(detections)
+            objects = trk.update(detections)
 
-        # Offload CLIP scoring to a background thread so it never blocks the capture loop
-        for obj in objects:
-            if obj.is_confirmed and obj.id not in _clip_scores and clip is not None and __import__('config').ENABLE_CLIP:
-                _clip_scores[obj.id] = None  # reserve slot so we don't spawn twice
-                frame_copy = frame.copy()
-                obj_id, d = obj.id, obj.detection
-                def _score(fc=frame_copy, oid=obj_id, dx=d.x, dy=d.y, dw=d.w, dh=d.h):
-                    score = clip.score(fc, dx, dy, dw, dh)
-                    label = "MINE" if score >= MINE_THRESHOLD else "non-mine"
-                    print(f"[CLIP] track={oid}  score={score:.2f}  → {label}")
-                    with _lock:
-                        _clip_scores[oid] = score
-                threading.Thread(target=_score, daemon=True).start()
+            # Offload CLIP scoring to a background thread so it never blocks the capture loop
+            for obj in objects:
+                if obj.is_confirmed and obj.id not in _clip_scores and clip is not None and __import__('config').ENABLE_CLIP:
+                    _clip_scores[obj.id] = None  # reserve slot so we don't spawn twice
+                    frame_copy = frame.copy()
+                    obj_id, d = obj.id, obj.detection
+                    def _score(fc=frame_copy, oid=obj_id, dx=d.x, dy=d.y, dw=d.w, dh=d.h):
+                        score = clip.score(fc, dx, dy, dw, dh)
+                        label = "MINE" if score >= MINE_THRESHOLD else "non-mine"
+                        print(f"[CLIP] track={oid}  score={score:.2f}  → {label}")
+                        with _lock:
+                            _clip_scores[oid] = score
+                    threading.Thread(target=_score, daemon=True).start()
 
-        display = render(
-            frame,
-            objects,
-            clip_scores=_clip_scores,
-            is_calibrated=det.is_calibrated,
-            calibration_progress=det.calibration_progress,
-        )
+            display = render(
+                frame,
+                objects,
+                clip_scores=_clip_scores,
+                is_calibrated=det.is_calibrated,
+                calibration_progress=det.calibration_progress,
+            )
 
-        _, frame_jpeg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            _, frame_jpeg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 70])
 
-        mask = det.debug_mask
-        if mask is not None:
-            _, mask_jpeg = cv2.imencode(".jpg", mask)
-            mask_bytes = mask_jpeg.tobytes()
-        else:
-            mask_bytes = b""
+            mask = det.debug_mask
+            if mask is not None:
+                _, mask_jpeg = cv2.imencode(".jpg", mask)
+                mask_bytes = mask_jpeg.tobytes()
+            else:
+                mask_bytes = b""
 
-        mines = [o for o in objects if _is_mine(o, _clip_scores, MINE_THRESHOLD)]
+            mines = [o for o in objects if _is_mine(o, _clip_scores, MINE_THRESHOLD)]
 
-        with _lock:
-            _latest_frame = frame_jpeg.tobytes()
-            _latest_mask = mask_bytes
-            _mine_count = len(mines)
-            _object_count = len(objects)
+            with _lock:
+                _latest_frame = frame_jpeg.tobytes()
+                _latest_mask = mask_bytes
+                _mine_count = len(mines)
+                _object_count = len(objects)
+
+        except Exception:
+            traceback.print_exc()
+            time.sleep(0.1)
 
 
 def _mjpeg(get_bytes):
@@ -485,20 +493,30 @@ def index():
     if (++logCount > 40) log.lastChild?.remove();
   }
 
-  // Frame polling
-  let frameCount = 0, lastFpsTime = Date.now();
+  // Frame polling — wait for each image to load before requesting the next
+  let frameCount = 0, lastFpsTime = Date.now(), totalFrames = 0;
   function pollFrame() {
-    feedImg.src = '/frame?t=' + Date.now();
-    frameCount++;
-    const now = Date.now();
-    if (now - lastFpsTime >= 1000) {
-      statFps.textContent = Math.round(frameCount * 1000 / (now - lastFpsTime));
-      frameCount = 0;
-      lastFpsTime = now;
-    }
-    statFrames.textContent = parseInt(statFrames.textContent) + 1;
+    const t = Date.now();
+    const img = new Image();
+    img.onload = function() {
+      feedImg.src = img.src;
+      frameCount++;
+      totalFrames++;
+      statFrames.textContent = totalFrames;
+      const now = Date.now();
+      if (now - lastFpsTime >= 1000) {
+        statFps.textContent = Math.round(frameCount * 1000 / (now - lastFpsTime));
+        frameCount = 0;
+        lastFpsTime = now;
+      }
+      pollFrame();
+    };
+    img.onerror = function() {
+      setTimeout(pollFrame, 200);
+    };
+    img.src = '/frame?t=' + t;
   }
-  setInterval(pollFrame, 33);
+  pollFrame();
 
   // Status polling
   let prevMines = 0, prevCalibrated = false;
