@@ -13,16 +13,20 @@ PI_AF_MODE = "auto"
 PI_AWB_MODE = "auto"
 PI_DENOISE_MODE = "cdn_off"
 
-# --- YOLOv8 ---
-YOLO_MODEL = "yolov8n.pt"   # downloads automatically on first run
-YOLO_CONF = 0.45            # minimum detection confidence
-YOLO_IOU = 0.45             # NMS IoU threshold
-YOLO_IMGSZ = 640            # inference resolution (smaller = faster on Pi)
+# --- YOLOv8 (onnxruntime) ---
+# Export once on any machine with ultralytics installed:
+#   python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx', imgsz=320)"
+# Then copy yolov8n.onnx into the cv/ directory.
+YOLO_MODEL   = "yolov8n.onnx"
+YOLO_CONF    = 0.45   # minimum detection confidence
+YOLO_IOU     = 0.45   # NMS IoU threshold
+YOLO_IMGSZ   = 320    # must match the size used during export
+YOLO_THREADS = 4      # onnxruntime intra-op threads (Pi 4 has 4 cores)
 
 # --- Multi-object tracker ---
-TRACK_CONFIRM_FRAMES = 2
+TRACK_CONFIRM_FRAMES    = 2
 TRACK_MAX_MISSING_FRAMES = 20
-TRACK_MAX_DIST_FRAC = 0.35
-TRACK_MIN_IOU = 0.05
+TRACK_MAX_DIST_FRAC     = 0.35
+TRACK_MIN_IOU           = 0.05
 TRACK_POSITION_SMOOTHING = 0.6
-TRACK_SIZE_SMOOTHING = 0.7
+TRACK_SIZE_SMOOTHING    = 0.7

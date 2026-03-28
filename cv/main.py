@@ -22,7 +22,10 @@ import config
 from camera.capture import open_camera
 from detector.background import BackgroundDetector
 from detector.tracker import ObjectTracker
-from detector.clip_classifier import CLIPClassifier, MINE_THRESHOLD
+MINE_THRESHOLD = 0.15
+CLIPClassifier = None
+if config.ENABLE_CLIP:
+    from detector.clip_classifier import CLIPClassifier, MINE_THRESHOLD  # noqa: F811
 from detector.display import render, _is_mine
 
 app = Flask(__name__)
