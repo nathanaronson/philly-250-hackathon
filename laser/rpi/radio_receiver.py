@@ -14,9 +14,14 @@ Run on the Pi:
 
 from __future__ import annotations
 
+from pathlib import Path
 import time
+import sys
 
 import serial
+
+LASER_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(LASER_DIR))
 
 from radio_protocol import (
     PACKET_TYPE_ACK,
