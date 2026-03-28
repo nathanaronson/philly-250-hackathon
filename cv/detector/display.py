@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import config
 from detector.background import Detection
+from detector.tracker import TrackedObject
 
 
 # BGR color palette
@@ -26,14 +27,17 @@ def _confidence_color(conf: float) -> tuple[int, int, int]:
     return _RED
 
 
-def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
-    """Draw bounding boxes and confidence labels for each detection."""
+def draw_detections(frame: np.ndarray, tracked: list[TrackedObject]) -> np.ndarray:
+    """Draw bounding boxes and confidence labels for each tracked object."""
     out = frame.copy()
-    for det in detections:
+    for obj in tracked:
+        det = obj.detection
         color = _confidence_color(det.confidence)
-        cv2.rectangle(out, (det.x, det.y), (det.x + det.w, det.y + det.h), color, 2)
+        thickness = 3 if obj.is_new else 2
+        cv2.rectangle(out, (det.x, det.y), (det.x + det.w, det.y + det.h), color, thickness)
 
-        label = f"Object  {det.confidence:.0%}"
+        tag = "NEW" if obj.is_new else f"#{obj.id}"
+        label = f"{tag}  {det.confidence:.0%}"
         (lw, lh), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
         label_y = max(det.y - 8, lh + 4)
         cv2.rectangle(out, (det.x, label_y - lh - 4), (det.x + lw + 4, label_y + baseline), _BLACK, -1)
@@ -42,12 +46,16 @@ def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarra
     return out
 
 
-def draw_status_bar(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
-    """Top status bar: CLEAR / OBJECT DETECTED + detection count."""
+def draw_status_bar(frame: np.ndarray, tracked: list[TrackedObject]) -> np.ndarray:
+    """Top status bar: CLEAR / OBJECT DETECTED + object count."""
     out = frame.copy()
-    if detections:
-        best = detections[0].confidence
-        text = f"OBJECT DETECTED  ({len(detections)} blob{'s' if len(detections) > 1 else ''})  best: {best:.0%}"
+    if tracked:
+        best = max(o.detection.confidence for o in tracked)
+        new_count = sum(1 for o in tracked if o.is_new)
+        parts = [f"{len(tracked)} object{'s' if len(tracked) > 1 else ''}"]
+        if new_count:
+            parts.append(f"{new_count} NEW")
+        text = "DETECTED  " + "  ".join(parts) + f"  best: {best:.0%}"
         color = _confidence_color(best)
     else:
         text = "CLEAR"
@@ -82,10 +90,10 @@ def draw_calibrating(frame: np.ndarray, progress: float) -> np.ndarray:
     return out
 
 
-def render(frame: np.ndarray, detections: list[Detection], is_calibrated: bool, calibration_progress: float) -> np.ndarray:
+def render(frame: np.ndarray, tracked: list[TrackedObject], is_calibrated: bool, calibration_progress: float) -> np.ndarray:
     """Single call to produce the final display frame."""
     if not is_calibrated:
         return draw_calibrating(frame, calibration_progress)
-    frame = draw_detections(frame, detections)
-    frame = draw_status_bar(frame, detections)
+    frame = draw_detections(frame, tracked)
+    frame = draw_status_bar(frame, tracked)
     return frame

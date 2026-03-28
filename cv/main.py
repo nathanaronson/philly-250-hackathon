@@ -17,6 +17,7 @@ from flask import Flask, Response, redirect
 
 from camera.capture import open_camera
 from detector.background import BackgroundDetector
+from detector.tracker import ObjectTracker
 from detector.display import render
 
 app = Flask(__name__)
@@ -25,6 +26,7 @@ app = Flask(__name__)
 _lock = threading.Lock()
 _latest_frame: bytes = b""
 _detector = BackgroundDetector()
+_tracker = ObjectTracker()
 
 
 def _capture_loop():
@@ -37,10 +39,12 @@ def _capture_loop():
 
         with _lock:
             det = _detector
+            trk = _tracker
         detections = det.process(frame)
+        tracked = trk.update(detections)
         display = render(
             frame,
-            detections,
+            tracked,
             is_calibrated=det.is_calibrated,
             calibration_progress=det.calibration_progress,
         )
@@ -89,9 +93,10 @@ def frame():
 
 @app.route("/reset")
 def reset():
-    global _detector
+    global _detector, _tracker
     with _lock:
         _detector = BackgroundDetector()
+        _tracker = ObjectTracker()
     print("[main] Background model reset — keep tank empty.")
     return redirect("/")
 
