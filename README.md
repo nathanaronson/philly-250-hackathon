@@ -1,34 +1,44 @@
-# Underwater Object Detector
+# Philly 250 Hackathon
 
-Real-time underwater object detection using a Raspberry Pi camera module and OpenCV background subtraction. Built for the Philly 250 Hackathon.
+## Modules
 
-## How It Works
+- [cv/](cv/) — Underwater object detection (Raspberry Pi camera + OpenCV)
+- `laser/` — *(coming soon)*
+
+---
+
+## CV — Underwater Object Detector
+
+Real-time underwater object detection using a Raspberry Pi camera module and OpenCV background subtraction.
+
+### How It Works
 
 1. **Calibration** — on startup, point the camera at the empty tank. The background model learns what "nothing" looks like over ~3 seconds.
 2. **Detection** — once calibrated, any object that appears (rock, mine mockup, debris) is highlighted with a bounding box and confidence score.
 3. **No training required** — works entirely on visual difference from the learned background.
 
-## Setup
+### Setup
 
-### On the Raspberry Pi
+#### On the Raspberry Pi
 
 ```bash
 git clone <repo-url>
 cd philly-250-hackathon
-bash scripts/install_pi.sh
-uv run python main.py
+bash cv/scripts/install_pi.sh
+cd cv && uv run python main.py
 ```
 
-### On a Dev Machine (webcam fallback)
+#### On a Dev Machine (webcam fallback)
 
 ```bash
+cd cv
 uv sync
 uv run python main.py
 ```
 
 The app auto-detects whether it's running on a Pi. On any other machine it falls back to webcam index 0.
 
-## Controls
+### Controls
 
 | Key         | Action                                                      |
 | ----------- | ----------------------------------------------------------- |
@@ -36,9 +46,9 @@ The app auto-detects whether it's running on a Pi. On any other machine it falls
 | `R`         | Reset — re-run calibration (keep tank empty after pressing) |
 | `S`         | Save current frame as PNG                                   |
 
-## Tuning
+### Tuning
 
-All parameters are in [config.py](config.py):
+All parameters are in [cv/config.py](cv/config.py):
 
 | Parameter             | Default | What it does                          |
 | --------------------- | ------- | ------------------------------------- |
@@ -49,11 +59,13 @@ All parameters are in [config.py](config.py):
 
 If you're getting too many false positives (bubbles, lighting flicker), raise `BG_VAR_THRESHOLD` or `MIN_CONTOUR_AREA`.
 
-## Project Structure
+### Project Structure
 
 ```text
+cv/
 ├── main.py                  # Entry point
 ├── config.py                # All tunable parameters
+├── pyproject.toml           # uv project + dependencies
 ├── camera/
 │   └── capture.py           # Pi camera / webcam abstraction
 ├── detector/
