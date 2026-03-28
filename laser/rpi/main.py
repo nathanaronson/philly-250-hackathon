@@ -5,7 +5,7 @@ import cv2
 
 import tracker_config as cfg
 from light_tracker import detect_light
-from servo_control import PanTiltController
+# from servo_control import PanTiltController
 
 
 def _add_cv_camera_to_path():
@@ -27,14 +27,31 @@ def _normalized_error(detection):
     return x_error, y_error
 
 
+def _movement_text(x_error, y_error):
+    horizontal = "HOLD"
+    vertical = "HOLD"
+
+    if x_error <= -cfg.DEADBAND_X:
+        horizontal = "MOVE LEFT"
+    elif x_error >= cfg.DEADBAND_X:
+        horizontal = "MOVE RIGHT"
+
+    if y_error <= -cfg.DEADBAND_Y:
+        vertical = "MOVE UP"
+    elif y_error >= cfg.DEADBAND_Y:
+        vertical = "MOVE DOWN"
+
+    return f"{horizontal} | {vertical}"
+
+
 def main():
     camera = open_camera()
-    controller = PanTiltController()
-    controller.start()
+    # controller = PanTiltController()
+    # controller.start()
 
     print("[rpi] Starting light tracker")
     print(f"[rpi] Pan GPIO={cfg.PAN_GPIO_PIN}, Tilt GPIO={cfg.TILT_GPIO_PIN}")
-    print("[rpi] Press Q or ESC to quit, C to re-center servos")
+    print("[rpi] Press Q or ESC to quit")
 
     try:
         while True:
@@ -47,7 +64,8 @@ def main():
 
             if detection is not None:
                 x_error, y_error = _normalized_error(detection)
-                controller.update(x_error, y_error)
+                move_text = _movement_text(x_error, y_error)
+                # controller.update(x_error, y_error)
                 cv2.putText(
                     annotated,
                     f"x={x_error:+.2f} y={y_error:+.2f}",
@@ -57,10 +75,19 @@ def main():
                     (0, 255, 0),
                     2,
                 )
+                cv2.putText(
+                    annotated,
+                    move_text,
+                    (20, 65),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 255),
+                    2,
+                )
             else:
                 cv2.putText(
                     annotated,
-                    "No red IR light detected",
+                    "No bright light detected",
                     (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8,
@@ -73,15 +100,13 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
-                if key == ord("c"):
-                    controller.center()
             else:
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
 
     finally:
-        controller.cleanup()
+        # controller.cleanup()
         camera.release()
         cv2.destroyAllWindows()
         print("[rpi] Stopped")

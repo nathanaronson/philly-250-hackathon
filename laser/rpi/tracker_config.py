@@ -19,9 +19,10 @@ DEADBAND_Y = 0.08
 PAN_STEP_US = 180
 TILT_STEP_US = 180
 
-# Red / IR-light detection tuning.
-MIN_RED_VALUE = 180
-MIN_RED_EXCESS = 60
+# Bright red-light detection tuning.
+MIN_RED_VALUE = 170
+MIN_RED_EXCESS = 35
+THRESHOLD_MARGIN = 20
 MIN_BLOB_AREA = 16
 BLUR_KERNEL = 9
 

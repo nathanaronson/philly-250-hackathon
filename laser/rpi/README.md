@@ -5,8 +5,8 @@ This folder contains a simple pan/tilt light tracker for the Raspberry Pi.
 ## What it does
 
 - reuses the existing camera module code from `cv/camera/capture.py`
-- detects a strongly red-dominant light spot in the frame
-- moves two positional servos to keep that light near the image center
+- detects the brightest red light spot in the frame
+- can move two positional servos to keep that light near the image center
 
 ## Default GPIO pins
 
@@ -39,4 +39,6 @@ python main.py
 Controls:
 
 - `Q` or `ESC` quits
-- `C` re-centers both servos
+
+Note: servo movement is currently commented out in `main.py` so you can verify
+the tracking direction overlay before re-enabling motor control.
