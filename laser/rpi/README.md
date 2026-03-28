@@ -69,3 +69,37 @@ This receiver now uses a framed packet protocol with:
 - CRC16 packet validation
 - ACK replies for valid packets
 - noise rejection for invalid / partial UART data
+
+## LSM6DSO IMU Telemetry
+
+Use `imu_radio_sender.py` on the Raspberry Pi if you want the Pi to read an
+`LSM6DSO` over I2C and send the IMU data back to the ground module / PC over
+the same packet protocol.
+
+### Raspberry Pi I2C pins
+
+- Pi `GPIO 2 / SDA1` (physical pin 3) -> LSM6DSO `SDA`
+- Pi `GPIO 3 / SCL1` (physical pin 5) -> LSM6DSO `SCL`
+- Pi `3.3V` (physical pin 1 or 17) -> LSM6DSO `VCC`
+- Pi `GND` (for example physical pin 6) -> LSM6DSO `GND`
+
+Important:
+
+- use `3.3V`, not `5V`, for the LSM6DSO logic/power unless your breakout board
+  explicitly supports 5V input
+- enable I2C on the Pi in `raspi-config`
+- install an I2C Python package such as `smbus2`
+
+Run on the Pi:
+
+```bash
+cd laser/rpi
+python imu_radio_sender.py
+```
+
+Use this on the ground-computer side:
+
+```bash
+cd laser/telemetry
+python imu_ground_receiver.py
+```
