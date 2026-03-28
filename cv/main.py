@@ -50,19 +50,6 @@ def _capture_loop():
             _latest_frame = jpeg.tobytes()
 
 
-def _mjpeg_stream():
-    import time
-    while True:
-        with _lock:
-            frame = _latest_frame
-        if not frame:
-            time.sleep(0.05)  # wait for camera to produce first frame
-            continue
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-        )
-
 
 @app.route("/")
 def index():
@@ -74,23 +61,30 @@ def index():
             body { background:#111; display:flex; flex-direction:column;
                    align-items:center; justify-content:center; min-height:100vh; margin:0; }
             img  { max-width:100%; border:2px solid #333; }
-            a    { color:#aaa; margin-top:16px; font-family:monospace; }
+            a    { color:#aaa; margin-top:16px; font-family:monospace; font-size:18px; }
         </style>
     </head>
     <body>
-        <img src="/stream" />
+        <img id="feed" src="/frame" />
         <a href="/reset">&#8635; Reset calibration</a>
+        <script>
+            const img = document.getElementById('feed');
+            setInterval(() => {
+                img.src = '/frame?t=' + Date.now();
+            }, 100);
+        </script>
     </body>
     </html>
     """
 
 
-@app.route("/stream")
-def stream():
-    return Response(
-        _mjpeg_stream(),
-        mimetype="multipart/x-mixed-replace; boundary=frame",
-    )
+@app.route("/frame")
+def frame():
+    with _lock:
+        data = _latest_frame
+    if not data:
+        return Response(status=204)
+    return Response(data, mimetype="image/jpeg")
 
 
 @app.route("/reset")
