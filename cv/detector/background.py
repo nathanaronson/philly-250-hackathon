@@ -32,7 +32,11 @@ class BackgroundDetector:
     def __init__(self):
         if BackgroundDetector._model is None:
             print(f"[detector] Loading {config.YOLO_MODEL} …")
-            BackgroundDetector._model = YOLO(config.YOLO_MODEL)
+            model = YOLO(config.YOLO_MODEL, task="detect")
+            # Force CPU — Pi has no CUDA/MPS; explicit device avoids torch
+            # trying to probe accelerators and potentially segfaulting.
+            model.to("cpu")
+            BackgroundDetector._model = model
             print("[detector] Model ready")
         self.debug_mask: np.ndarray | None = None
 
@@ -54,6 +58,7 @@ class BackgroundDetector:
             conf=config.YOLO_CONF,
             iou=config.YOLO_IOU,
             imgsz=config.YOLO_IMGSZ,
+            device="cpu",
             verbose=False,
         )
 
