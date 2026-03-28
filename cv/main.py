@@ -51,14 +51,17 @@ def _capture_loop():
 
 
 def _mjpeg_stream():
+    import time
     while True:
         with _lock:
             frame = _latest_frame
-        if frame:
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-            )
+        if not frame:
+            time.sleep(0.05)  # wait for camera to produce first frame
+            continue
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+        )
 
 
 @app.route("/")
