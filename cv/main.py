@@ -1,70 +1,106 @@
 """
-Underwater object detector — entry point.
+Underwater object detector — streams live annotated video over HTTP.
 
 Usage:
-    python main.py
+    uv run python main.py
 
-Controls:
-    Q or ESC  — quit
-    R         — reset background model (re-calibrate)
-    S         — save current frame as PNG
+Then open a browser on any device on the same network:
+    http://<pi-ip>:5000
+
+Controls (keyboard not available in browser — use these endpoints):
+    GET /reset   — re-calibrate (keep tank empty first)
 """
 
-import sys
-import time
+import threading
 import cv2
+from flask import Flask, Response, redirect
 
 from camera.capture import open_camera
 from detector.background import BackgroundDetector
 from detector.display import render
 
+app = Flask(__name__)
 
-WINDOW_NAME = "Underwater Detector"
+# Shared state between the capture thread and Flask
+_lock = threading.Lock()
+_latest_frame: bytes = b""
+_detector = BackgroundDetector()
 
 
-def main():
+def _capture_loop():
+    global _latest_frame, _detector
     camera = open_camera()
-    detector = BackgroundDetector()
-
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW_NAME, 800, 600)
-
-    frame_count = 0
-    print("[main] Starting — point camera at empty tank to calibrate.")
-    print("[main] Controls: Q/ESC = quit | R = reset calibration | S = save frame")
-
     while True:
         ok, frame = camera.read()
         if not ok or frame is None:
-            print("[main] Failed to read frame — exiting.")
-            break
+            continue
 
-        detections = detector.process(frame)
+        with _lock:
+            det = _detector
+        detections = det.process(frame)
         display = render(
             frame,
             detections,
-            is_calibrated=detector.is_calibrated,
-            calibration_progress=detector.calibration_progress,
+            is_calibrated=det.is_calibrated,
+            calibration_progress=det.calibration_progress,
         )
 
-        cv2.imshow(WINDOW_NAME, display)
-        frame_count += 1
+        _, jpeg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        with _lock:
+            _latest_frame = jpeg.tobytes()
 
-        key = cv2.waitKey(1) & 0xFF
-        if key in (ord("q"), 27):  # Q or ESC
-            break
-        elif key == ord("r"):
-            print("[main] Resetting background model — keep tank empty.")
-            detector = BackgroundDetector()
-        elif key == ord("s"):
-            filename = f"frame_{int(time.time())}.png"
-            cv2.imwrite(filename, display)
-            print(f"[main] Saved {filename}")
 
-    camera.release()
-    cv2.destroyAllWindows()
-    print(f"[main] Stopped after {frame_count} frames.")
+def _mjpeg_stream():
+    while True:
+        with _lock:
+            frame = _latest_frame
+        if frame:
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            )
+
+
+@app.route("/")
+def index():
+    return """
+    <html>
+    <head>
+        <title>Underwater Detector</title>
+        <style>
+            body { background:#111; display:flex; flex-direction:column;
+                   align-items:center; justify-content:center; min-height:100vh; margin:0; }
+            img  { max-width:100%; border:2px solid #333; }
+            a    { color:#aaa; margin-top:16px; font-family:monospace; }
+        </style>
+    </head>
+    <body>
+        <img src="/stream" />
+        <a href="/reset">&#8635; Reset calibration</a>
+    </body>
+    </html>
+    """
+
+
+@app.route("/stream")
+def stream():
+    return Response(
+        _mjpeg_stream(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.route("/reset")
+def reset():
+    global _detector
+    with _lock:
+        _detector = BackgroundDetector()
+    print("[main] Background model reset — keep tank empty.")
+    return redirect("/")
 
 
 if __name__ == "__main__":
-    main()
+    t = threading.Thread(target=_capture_loop, daemon=True)
+    t.start()
+    print("[main] Starting — open http://<this-device-ip>:5000 in a browser")
+    app.run(host="0.0.0.0", port=5000, threaded=True)
