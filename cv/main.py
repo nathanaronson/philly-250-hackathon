@@ -17,6 +17,7 @@ import threading
 import time
 import cv2
 from flask import Flask, Response, redirect, jsonify
+import config
 
 from camera.capture import open_camera
 from detector.background import BackgroundDetector
@@ -37,6 +38,8 @@ _mine_count: int = 0   # number of confirmed mines in current frame
 _object_count: int = 0
 _frame_total: int = 0
 _capture_fps: float = 0.0
+_latest_frame_seq: int = 0
+_latest_mask_seq: int = 0
 
 
 def _load_clip():
@@ -48,7 +51,7 @@ def _load_clip():
 
 def _capture_loop():
     global _latest_frame, _latest_mask, _detector, _tracker, _clip_scores, _mine_count, _object_count
-    global _frame_total, _capture_fps
+    global _frame_total, _capture_fps, _latest_frame_seq, _latest_mask_seq
     import traceback
 
     camera = open_camera()
@@ -100,7 +103,11 @@ def _capture_loop():
                 calibration_progress=det.calibration_progress,
             )
 
-            _, frame_jpeg = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            _, frame_jpeg = cv2.imencode(
+                ".jpg",
+                display,
+                [cv2.IMWRITE_JPEG_QUALITY, config.STREAM_JPEG_QUALITY],
+            )
 
             mask = det.debug_mask
             if mask is not None:
@@ -121,6 +128,8 @@ def _capture_loop():
             with _lock:
                 _latest_frame = frame_jpeg.tobytes()
                 _latest_mask = mask_bytes
+                _latest_frame_seq += 1
+                _latest_mask_seq += 1
                 _mine_count = len(mines)
                 _object_count = len(objects)
                 _frame_total += 1
@@ -131,12 +140,14 @@ def _capture_loop():
             time.sleep(0.1)
 
 
-def _mjpeg(get_bytes):
+def _mjpeg(get_payload):
+    last_seq = -1
     while True:
-        data = get_bytes()
-        if not data:
-            time.sleep(0.05)
+        seq, data = get_payload()
+        if not data or seq == last_seq:
+            time.sleep(0.01)
             continue
+        last_seq = seq
         yield (
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n\r\n" + data + b"\r\n"
@@ -622,7 +633,7 @@ def status():
 @app.route("/stream")
 def stream():
     return Response(
-        _mjpeg(lambda: _latest_frame),
+        _mjpeg(lambda: (_latest_frame_seq, _latest_frame)),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -630,7 +641,7 @@ def stream():
 @app.route("/debug")
 def debug():
     return Response(
-        _mjpeg(lambda: _latest_mask),
+        _mjpeg(lambda: (_latest_mask_seq, _latest_mask)),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -638,6 +649,7 @@ def debug():
 @app.route("/reset")
 def reset():
     global _detector, _tracker, _clip_scores, _object_count, _mine_count, _frame_total, _capture_fps
+    global _latest_frame_seq, _latest_mask_seq
     with _lock:
         _detector = BackgroundDetector()
         _tracker = ObjectTracker()
@@ -646,6 +658,8 @@ def reset():
         _mine_count = 0
         _frame_total = 0
         _capture_fps = 0.0
+        _latest_frame_seq = 0
+        _latest_mask_seq = 0
     print("[main] Reset — keep scene empty for calibration.")
     return redirect("/")
 

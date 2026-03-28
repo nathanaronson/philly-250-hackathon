@@ -35,8 +35,9 @@ class BackgroundDetector:
             varThreshold=config.BG_VAR_THRESHOLD,
             detectShadows=False,
         )
-        self._open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        self._close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        self._open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        self._close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        self._target_close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
         self._calibration_start = time.monotonic()
         self.debug_mask: np.ndarray | None = None
 
@@ -55,24 +56,94 @@ class BackgroundDetector:
 
     def _gray_and_skin_masks(self, frame_small: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         hsv = cv2.cvtColor(frame_small, cv2.COLOR_BGR2HSV)
-        gray_hsv = cv2.inRange(
-            hsv,
-            (0, 0, config.GRAY_V_MIN),
-            (180, config.GRAY_S_MAX, config.GRAY_V_MAX),
-        )
+        h = hsv[:, :, 0]
+        s = hsv[:, :, 1]
+        v = hsv[:, :, 2]
+
+        sat_mask = cv2.inRange(s, 0, config.GRAY_S_MAX)
+        val_mask = cv2.inRange(v, config.GRAY_V_MIN, config.GRAY_V_MAX)
+        gray_hsv = cv2.bitwise_and(sat_mask, val_mask)
 
         lab = cv2.cvtColor(frame_small, cv2.COLOR_BGR2LAB)
         a = lab[:, :, 1]
         b = lab[:, :, 2]
         neutral_a = cv2.inRange(a, 128 - config.GRAY_AB_MAX, 128 + config.GRAY_AB_MAX)
         neutral_b = cv2.inRange(b, 128 - config.GRAY_AB_MAX, 128 + config.GRAY_AB_MAX)
-        gray_lab = cv2.bitwise_and(neutral_a, neutral_b)
+        gray_lab = cv2.bitwise_and(cv2.bitwise_and(neutral_a, neutral_b), val_mask)
 
-        gray_mask = cv2.bitwise_and(gray_hsv, gray_lab)
+        # OR between HSV-gray and LAB-neutral handles underwater color casts better.
+        gray_mask = cv2.bitwise_or(gray_hsv, gray_lab)
 
         # Broad skin-tone window in HSV; used only as a reject signal.
-        skin_mask = cv2.inRange(hsv, (0, 25, 35), (25, 220, 255))
+        skin_h = cv2.inRange(h, 0, 25)
+        skin_s = cv2.inRange(s, 30, 220)
+        skin_v = cv2.inRange(v, 40, 255)
+        skin_mask = cv2.bitwise_and(cv2.bitwise_and(skin_h, skin_s), skin_v)
         return gray_mask, skin_mask
+
+    def _contour_detections(
+        self,
+        contour_source: np.ndarray,
+        gray_mask: np.ndarray,
+        skin_mask: np.ndarray,
+    ) -> list[Detection]:
+        contours, _ = cv2.findContours(
+            contour_source, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        detections: list[Detection] = []
+        for cnt in contours:
+            area = float(cv2.contourArea(cnt))
+            if not (config.MIN_CONTOUR_AREA <= area <= config.MAX_CONTOUR_AREA):
+                continue
+
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect = min(w, h) / max(w, h) if max(w, h) > 0 else 0.0
+            if aspect < config.MIN_ASPECT_RATIO:
+                continue
+
+            perimeter = cv2.arcLength(cnt, True)
+            circularity = (4 * np.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
+            if circularity < config.MIN_CIRCULARITY:
+                continue
+
+            contour_mask = np.zeros_like(contour_source)
+            cv2.drawContours(contour_mask, [cnt], -1, 255, thickness=-1)
+            pixels = float(cv2.countNonZero(contour_mask))
+            if pixels <= 0:
+                continue
+
+            gray_pixels = cv2.countNonZero(cv2.bitwise_and(gray_mask, contour_mask))
+            skin_pixels = cv2.countNonZero(cv2.bitwise_and(skin_mask, contour_mask))
+            gray_ratio = gray_pixels / pixels
+            skin_ratio = skin_pixels / pixels
+
+            if gray_ratio < config.MIN_GRAY_RATIO:
+                continue
+            if skin_ratio > config.MAX_SKIN_RATIO:
+                continue
+
+            fill = area / float(w * h) if w * h > 0 else 0.0
+            confidence = round(
+                (
+                    0.48 * self._clip01(gray_ratio)
+                    + 0.18 * self._clip01(aspect)
+                    + 0.18 * self._clip01(fill)
+                    + 0.16 * self._clip01(circularity)
+                ),
+                3,
+            )
+            detections.append(
+                Detection(
+                    x=x * 2,
+                    y=y * 2,
+                    w=w * 2,
+                    h=h * 2,
+                    confidence=confidence,
+                    area=int(area * 4),
+                )
+            )
+        return detections
 
     def process(self, frame: np.ndarray) -> list[Detection]:
         full_h, full_w = frame.shape[:2]
@@ -96,64 +167,15 @@ class BackgroundDetector:
         fg_mask[:, small_w - margin :] = 0
 
         gray_mask, skin_mask = self._gray_and_skin_masks(small)
-        debug_small = cv2.bitwise_and(fg_mask, gray_mask)
+        target_mask = cv2.bitwise_and(fg_mask, gray_mask)
+        target_mask = cv2.morphologyEx(target_mask, cv2.MORPH_CLOSE, self._target_close_kernel)
+        debug_small = target_mask
         self.debug_mask = cv2.resize(debug_small, (full_w, full_h), interpolation=cv2.INTER_NEAREST)
 
-        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        detections: list[Detection] = []
-        for cnt in contours:
-            area = float(cv2.contourArea(cnt))
-            if not (config.MIN_CONTOUR_AREA <= area <= config.MAX_CONTOUR_AREA):
-                continue
-
-            x, y, w, h = cv2.boundingRect(cnt)
-            aspect = min(w, h) / max(w, h) if max(w, h) > 0 else 0.0
-            if aspect < config.MIN_ASPECT_RATIO:
-                continue
-
-            perimeter = cv2.arcLength(cnt, True)
-            circularity = (4 * np.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
-            if circularity < config.MIN_CIRCULARITY:
-                continue
-
-            contour_mask = np.zeros_like(fg_mask)
-            cv2.drawContours(contour_mask, [cnt], -1, 255, thickness=-1)
-            pixels = float(cv2.countNonZero(contour_mask))
-            if pixels <= 0:
-                continue
-
-            gray_pixels = cv2.countNonZero(cv2.bitwise_and(gray_mask, contour_mask))
-            skin_pixels = cv2.countNonZero(cv2.bitwise_and(skin_mask, contour_mask))
-            gray_ratio = gray_pixels / pixels
-            skin_ratio = skin_pixels / pixels
-
-            if gray_ratio < config.MIN_GRAY_RATIO:
-                continue
-            if skin_ratio > config.MAX_SKIN_RATIO:
-                continue
-
-            fill = area / float(w * h) if w * h > 0 else 0.0
-            confidence = round(
-                (
-                    0.45 * self._clip01(gray_ratio)
-                    + 0.20 * self._clip01(aspect)
-                    + 0.20 * self._clip01(fill)
-                    + 0.15 * self._clip01(circularity)
-                ),
-                3,
-            )
-
-            detections.append(
-                Detection(
-                    x=x * 2,
-                    y=y * 2,
-                    w=w * 2,
-                    h=h * 2,
-                    confidence=confidence,
-                    area=int(area * 4),
-                )
-            )
+        detections = self._contour_detections(target_mask, gray_mask, skin_mask)
+        if not detections:
+            # Fallback: if intersection misses, still allow motion contours that are gray-ish.
+            detections = self._contour_detections(fg_mask, gray_mask, skin_mask)
 
         detections.sort(key=lambda d: (d.confidence, d.area), reverse=True)
         return detections[:3]
