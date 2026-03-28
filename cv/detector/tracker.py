@@ -1,10 +1,12 @@
 """
-Single-target tracker tuned for the demo.
+Multi-object centroid/IoU tracker.
 
-The detector may still produce a few candidate blobs, but for the demo we only
-want one object to become "the mine": whichever new object appears and stays in
-view. This tracker keeps a single active target, smooths its box, and resists
-jumping to nearby noise.
+Each new detection is matched to an existing track by a combined IoU +
+distance score.  Unmatched detections spawn new tracks; tracks that go
+unmatched for too long are dropped.
+
+Tracks created during normal operation only — new tracks are never created
+while the detector is suppressing detections (camera movement).
 """
 
 from dataclasses import dataclass, field
@@ -14,10 +16,7 @@ import config
 from detector.background import Detection
 
 
-MIN_MATCH_SCORE = 0.20
-
-
-def _iou(ax: int, ay: int, aw: int, ah: int, bx: int, by: int, bw: int, bh: int) -> float:
+def _iou(ax, ay, aw, ah, bx, by, bw, bh) -> float:
     ix1 = max(ax, bx)
     iy1 = max(ay, by)
     ix2 = min(ax + aw, bx + bw)
@@ -29,32 +28,36 @@ def _iou(ax: int, ay: int, aw: int, ah: int, bx: int, by: int, bw: int, bh: int)
     return inter / union if union > 0 else 0.0
 
 
-def _match_score(pred_x: int, pred_y: int, pred_w: int, pred_h: int, det: Detection) -> float:
-    iou = _iou(pred_x, pred_y, pred_w, pred_h, det.x, det.y, det.w, det.h)
+def _match_score(
+    track_cx: float, track_cy: float, track_w: float, track_h: float,
+    det: Detection,
+    frame_diag: float,
+) -> float:
+    """Combined IoU + normalised centre-distance score (higher = better match)."""
+    tx = int(track_cx - track_w / 2)
+    ty = int(track_cy - track_h / 2)
+    tw = int(track_w)
+    th = int(track_h)
 
-    pcx = pred_x + pred_w / 2
-    pcy = pred_y + pred_h / 2
+    iou = _iou(tx, ty, tw, th, det.x, det.y, det.w, det.h)
+
     dcx = det.x + det.w / 2
     dcy = det.y + det.h / 2
-    dist = math.hypot(dcx - pcx, dcy - pcy)
-    diag = max(math.hypot(pred_w, pred_h), 1.0)
-    dist_score = max(0.0, 1.0 - dist / (config.TRACK_MAX_MOVE_DIAG * diag))
+    dist = math.hypot(dcx - track_cx, dcy - track_cy)
+    max_dist = config.TRACK_MAX_DIST_FRAC * frame_diag
+    dist_score = max(0.0, 1.0 - dist / max_dist)
 
-    width_ratio = min(pred_w, det.w) / max(pred_w, det.w) if pred_w > 0 and det.w > 0 else 0.0
-    height_ratio = min(pred_h, det.h) / max(pred_h, det.h) if pred_h > 0 and det.h > 0 else 0.0
-    size_score = (width_ratio + height_ratio) / 2
-
-    return (0.5 * iou) + (0.35 * dist_score) + (0.15 * size_score)
+    return 0.5 * iou + 0.5 * dist_score
 
 
 @dataclass
 class TrackedObject:
     id: int
     detection: Detection
-    vx: float = 0.0
-    vy: float = 0.0
     age: int = 1
     missing: int = 0
+    vx: float = 0.0
+    vy: float = 0.0
     cx: float = field(init=False)
     cy: float = field(init=False)
     w: float = field(init=False)
@@ -70,107 +73,105 @@ class TrackedObject:
     def is_confirmed(self) -> bool:
         return self.age >= config.TRACK_CONFIRM_FRAMES
 
-    def predicted_box(self) -> tuple[int, int, int, int]:
-        return self._box_from_state(self.cx + self.vx, self.cy + self.vy, self.w, self.h)
-
-    def mark_missing(self):
-        self.cx += self.vx
-        self.cy += self.vy
-        self.missing += 1
-        self._sync_detection(
-            confidence=max(self.detection.confidence * 0.9, 0.0),
-            area=self.detection.area,
-        )
-
     def update(self, det: Detection):
         new_cx = det.x + det.w / 2
         new_cy = det.y + det.h / 2
+
         raw_vx = new_cx - self.cx
         raw_vy = new_cy - self.cy
+        self.vx = 0.6 * self.vx + 0.4 * raw_vx
+        self.vy = 0.6 * self.vy + 0.4 * raw_vy
 
-        self.vx = 0.65 * self.vx + 0.35 * raw_vx
-        self.vy = 0.65 * self.vy + 0.35 * raw_vy
+        alpha_pos = 1.0 - config.TRACK_POSITION_SMOOTHING
+        alpha_sz = 1.0 - config.TRACK_SIZE_SMOOTHING
 
-        self.cx = (
-            config.TRACK_POSITION_SMOOTHING * self.cx
-            + (1 - config.TRACK_POSITION_SMOOTHING) * new_cx
-        )
-        self.cy = (
-            config.TRACK_POSITION_SMOOTHING * self.cy
-            + (1 - config.TRACK_POSITION_SMOOTHING) * new_cy
-        )
-        self.w = (
-            config.TRACK_SIZE_SMOOTHING * self.w
-            + (1 - config.TRACK_SIZE_SMOOTHING) * det.w
-        )
-        self.h = (
-            config.TRACK_SIZE_SMOOTHING * self.h
-            + (1 - config.TRACK_SIZE_SMOOTHING) * det.h
-        )
+        self.cx = config.TRACK_POSITION_SMOOTHING * self.cx + alpha_pos * new_cx
+        self.cy = config.TRACK_POSITION_SMOOTHING * self.cy + alpha_pos * new_cy
+        self.w = config.TRACK_SIZE_SMOOTHING * self.w + alpha_sz * det.w
+        self.h = config.TRACK_SIZE_SMOOTHING * self.h + alpha_sz * det.h
 
         self.age += 1
         self.missing = 0
-        self._sync_detection(confidence=det.confidence, area=det.area)
+        self._sync_detection(det.confidence, det.area)
+
+    def mark_missing(self):
+        # Drift position by velocity estimate
+        self.cx += self.vx
+        self.cy += self.vy
+        self.missing += 1
+        self._sync_detection(self.detection.confidence * 0.92, self.detection.area)
 
     def _sync_detection(self, confidence: float, area: int):
-        x, y, w, h = self._box_from_state(self.cx, self.cy, self.w, self.h)
-        self.detection = Detection(x=x, y=y, w=w, h=h, confidence=confidence, area=area)
-
-    @staticmethod
-    def _box_from_state(cx: float, cy: float, w: float, h: float) -> tuple[int, int, int, int]:
-        iw = max(int(round(w)), 1)
-        ih = max(int(round(h)), 1)
-        x = int(round(cx - iw / 2))
-        y = int(round(cy - ih / 2))
-        return x, y, iw, ih
+        iw = max(int(round(self.w)), 1)
+        ih = max(int(round(self.h)), 1)
+        x = int(round(self.cx - iw / 2))
+        y = int(round(self.cy - ih / 2))
+        self.detection = Detection(x=x, y=y, w=iw, h=ih, confidence=confidence, area=area)
 
 
 class ObjectTracker:
     def __init__(self):
-        self._active: TrackedObject | None = None
+        self._tracks: list[TrackedObject] = []
         self._next_id = 0
+        self._frame_diag: float = math.hypot(
+            config.FRAME_WIDTH, config.FRAME_HEIGHT
+        )
 
     def update(self, detections: list[Detection]) -> list[TrackedObject]:
-        if self._active is None:
-            best = self._select_primary_detection(detections)
-            if best is None:
-                return []
-            self._active = self._new_track(best)
-            return [self._active]
+        # Step 1: greedily match detections to existing tracks
+        unmatched_dets = list(range(len(detections)))
+        matched_track_ids: set[int] = set()
 
-        best_idx, best_score = self._best_match(detections)
-        if best_idx >= 0 and best_score >= MIN_MATCH_SCORE:
-            self._active.update(detections[best_idx])
-            return [self._active]
+        # Build score matrix and do greedy assignment (best score first)
+        if self._tracks and detections:
+            candidates = []
+            for ti, track in enumerate(self._tracks):
+                for di, det in enumerate(detections):
+                    score = _match_score(
+                        track.cx, track.cy, track.w, track.h,
+                        det, self._frame_diag,
+                    )
+                    candidates.append((score, ti, di))
 
-        self._active.mark_missing()
-        if self._active.missing > config.TRACK_MAX_MISSING_FRAMES:
-            replacement = self._select_primary_detection(detections)
-            self._active = self._new_track(replacement) if replacement is not None else None
+            candidates.sort(reverse=True)
+            assigned_tracks: set[int] = set()
+            assigned_dets: set[int] = set()
 
-        return [self._active] if self._active is not None else []
+            for score, ti, di in candidates:
+                if ti in assigned_tracks or di in assigned_dets:
+                    continue
+                track = self._tracks[ti]
+                det = detections[di]
 
-    def _best_match(self, detections: list[Detection]) -> tuple[int, float]:
-        if self._active is None:
-            return -1, 0.0
+                iou = _iou(
+                    int(track.cx - track.w / 2), int(track.cy - track.h / 2),
+                    int(track.w), int(track.h),
+                    det.x, det.y, det.w, det.h,
+                )
+                dcx = det.x + det.w / 2
+                dcy = det.y + det.h / 2
+                dist = math.hypot(dcx - track.cx, dcy - track.cy)
 
-        px, py, pw, ph = self._active.predicted_box()
-        best_idx = -1
-        best_score = 0.0
-        for i, det in enumerate(detections):
-            score = _match_score(px, py, pw, ph, det)
-            if score > best_score:
-                best_idx = i
-                best_score = score
-        return best_idx, best_score
+                # Accept if IoU passes OR if close enough in distance
+                if iou >= config.TRACK_MIN_IOU or dist <= config.TRACK_MAX_DIST_FRAC * self._frame_diag:
+                    track.update(det)
+                    assigned_tracks.add(ti)
+                    assigned_dets.add(di)
+                    matched_track_ids.add(ti)
 
-    @staticmethod
-    def _select_primary_detection(detections: list[Detection]) -> Detection | None:
-        if not detections:
-            return None
-        return max(detections, key=lambda det: (det.confidence, -det.area))
+            unmatched_dets = [i for i in range(len(detections)) if i not in assigned_dets]
 
-    def _new_track(self, det: Detection) -> TrackedObject:
-        obj = TrackedObject(id=self._next_id, detection=det)
-        self._next_id += 1
-        return obj
+        # Step 2: mark unmatched tracks as missing
+        for ti, track in enumerate(self._tracks):
+            if ti not in matched_track_ids:
+                track.mark_missing()
+
+        # Step 3: remove tracks that have been missing too long
+        self._tracks = [t for t in self._tracks if t.missing <= config.TRACK_MAX_MISSING_FRAMES]
+
+        # Step 4: spawn new tracks for unmatched detections
+        for di in unmatched_dets:
+            self._tracks.append(TrackedObject(id=self._next_id, detection=detections[di]))
+            self._next_id += 1
+
+        return list(self._tracks)

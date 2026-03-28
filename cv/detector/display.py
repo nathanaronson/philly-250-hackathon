@@ -119,9 +119,16 @@ def draw_status_bar(
     return out
 
 
-def draw_calibrating(frame: np.ndarray, _progress: float) -> np.ndarray:
-    # Plain dark background — web UI handles all calibration indicators
-    return np.full_like(frame, (30, 15, 6))
+def draw_calibrating(frame: np.ndarray, progress: float) -> np.ndarray:
+    # Show live feed during calibration so the operator can see the scene;
+    # draw a thin blue progress bar at the bottom of the frame.
+    out = frame.copy()
+    h, w = out.shape[:2]
+    bar_h = 6
+    filled = int(w * progress)
+    cv2.rectangle(out, (0, h - bar_h), (w, h), (60, 30, 10), -1)
+    cv2.rectangle(out, (0, h - bar_h), (filled, h), _BLUE, -1)
+    return out
 
 
 def render(

@@ -111,9 +111,9 @@ Pis using the shared packet/ACK protocol.
 
 Behavior:
 
-- Raspberry Pi 5 sends `1`
-- Raspberry Pi 4 receives and ACKs `1`, then sends `2`
-- Raspberry Pi 5 receives and ACKs `2`, then sends `3`
+- Raspberry Pi 4 sends `1`
+- Raspberry Pi 5 receives and ACKs `1`, then sends `2`
+- Raspberry Pi 4 receives and ACKs `2`, then sends `3`
 - this continues forever
 
 ### Which script runs where

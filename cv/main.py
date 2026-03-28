@@ -660,7 +660,7 @@ def reset():
         _capture_fps = 0.0
         _latest_frame_seq = 0
         _latest_mask_seq = 0
-    print("[main] Reset — keep scene empty for calibration.")
+    print("[main] Reset — tracker cleared.")
     return redirect("/")
 
 
@@ -673,6 +673,6 @@ if __name__ == "__main__":
     threading.Thread(target=_capture_loop, daemon=True).start()
     port = 8080
     print(f"[main] Starting — open http://localhost:{port}")
-    print("[main] CLIP loading in background (~30s on first run)...")
-    print(f"[main] Calibration will take {__import__('config').CALIBRATION_SECONDS}s — keep scene empty")
+    if _cfg.ENABLE_CLIP:
+        print("[main] CLIP loading in background (~30s on first run)...")
     app.run(host="0.0.0.0", port=port, threaded=True)
