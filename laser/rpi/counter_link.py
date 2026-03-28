@@ -20,11 +20,11 @@ from radio_protocol import (
 )
 
 
-BAUD_RATE = 57600
-ACK_TIMEOUT_SECONDS = 0.30
-MAX_RETRIES = 5
-HELLO_INTERVAL_SECONDS = 1.0
-COUNTER_RETRY_INTERVAL_SECONDS = 1.0
+BAUD_RATE = 115200
+ACK_TIMEOUT_SECONDS = 0.08
+MAX_RETRIES = 3
+HELLO_INTERVAL_SECONDS = 0.25
+COUNTER_RETRY_INTERVAL_SECONDS = 0.10
 
 
 def send_with_ack(
@@ -83,7 +83,7 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
 
     print(f"[{name}] Opening {port} at {BAUD_RATE} baud")
 
-    with serial.Serial(port, BAUD_RATE, timeout=0.05, write_timeout=0.25) as ser:
+    with serial.Serial(port, BAUD_RATE, timeout=0.01, write_timeout=0.10) as ser:
         time.sleep(0.25)
         ser.reset_input_buffer()
         ser.reset_output_buffer()
