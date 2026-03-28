@@ -39,7 +39,8 @@ def send_with_ack(
     for attempt in range(1, MAX_RETRIES + 1):
         ser.write(packet)
         ser.flush()
-        print(f"[link] Sent seq={tx_sequence} attempt={attempt} payload={payload_text}")
+        if packet_type == PACKET_TYPE_DATA:
+            print(f"[link] Sent seq={tx_sequence} attempt={attempt} payload={payload_text}")
 
         deadline = time.monotonic() + ACK_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -62,9 +63,11 @@ def send_with_ack(
                     except UnicodeDecodeError:
                         continue
 
-                    print(f"[link] Deferred incoming payload while waiting for ACK: {text}")
+                    if packet_in.packet_type == PACKET_TYPE_DATA:
+                        print(f"[link] Deferred incoming payload while waiting for ACK: {text}")
 
-        print(f"[link] Retrying seq={tx_sequence}")
+        if packet_type == PACKET_TYPE_DATA:
+            print(f"[link] Retrying seq={tx_sequence}")
 
     return False
 
@@ -74,6 +77,7 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
     tx_sequence = 0
     next_value_to_send = start_value
     initial_counter_sent = False
+    link_established = False
     next_hello_deadline = 0.0
     next_counter_deadline = 0.0
 
@@ -89,8 +93,8 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
         while True:
             now = time.monotonic()
 
-            if now >= next_hello_deadline:
-                if send_with_ack(ser, packet_parser, PACKET_TYPE_HELLO, tx_sequence, f"HELLO,{name}"):
+            if (not link_established) and now >= next_hello_deadline:
+                if send_with_ack(ser, packet_parser, PACKET_TYPE_HELLO, tx_sequence, ""):
                     tx_sequence = (tx_sequence + 1) & 0xFF
                 next_hello_deadline = now + HELLO_INTERVAL_SECONDS
 
@@ -99,6 +103,7 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
                     next_value_to_send += 2
                     tx_sequence = (tx_sequence + 1) & 0xFF
                     initial_counter_sent = True
+                    link_established = True
                 else:
                     print(f"[{name}] Failed to deliver initial value")
 
@@ -124,7 +129,6 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
                     continue
 
                 if packet_in.packet_type == PACKET_TYPE_HELLO:
-                    print(f"[{name}] Received HELLO from peer: {text}")
                     continue
 
                 if packet_in.packet_type != PACKET_TYPE_DATA:
@@ -138,6 +142,7 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
                     continue
 
                 print(f"[{name}] Received value {received_value}")
+                link_established = True
 
                 expected_previous = next_value_to_send - 1
                 if received_value != expected_previous:
@@ -151,6 +156,7 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
                     next_value_to_send += 2
                     tx_sequence = (tx_sequence + 1) & 0xFF
                     initial_counter_sent = True
+                    link_established = True
                 else:
                     print(f"[{name}] Failed to deliver {next_value_to_send}")
 

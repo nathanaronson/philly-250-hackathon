@@ -15,7 +15,7 @@ BAUD_RATE = 57600
 ACK_TIMEOUT_SECONDS = 0.35
 SEND_INTERVAL_SECONDS = 0.10
 MAX_RETRIES = 5
-MESSAGE = b"hello"
+START_VALUE = 1
 
 ports = [p.device for p in serial.tools.list_ports.comports()]
 print("Found ports:", ports)
@@ -25,6 +25,7 @@ if SERIAL_PORT not in ports:
 else:
     parser = PacketParser()
     sequence = 0
+    next_value = START_VALUE
 
     print(f"{SERIAL_PORT} is plugged in")
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.05, write_timeout=0.25)
@@ -34,13 +35,18 @@ else:
 
     try:
         while True:
-            packet = build_packet(packet_type=PACKET_TYPE_DATA, sequence=sequence, payload=MESSAGE)
+            payload_text = str(next_value)
+            packet = build_packet(
+                packet_type=PACKET_TYPE_DATA,
+                sequence=sequence,
+                payload=payload_text.encode("ascii"),
+            )
             acknowledged = False
 
             for attempt in range(1, MAX_RETRIES + 1):
                 ser.write(packet)
                 ser.flush()
-                print(f"Sent seq={sequence} attempt={attempt} payload={MESSAGE.decode('ascii')}")
+                print(f"Sent seq={sequence} attempt={attempt} payload={payload_text}")
 
                 deadline = time.monotonic() + ACK_TIMEOUT_SECONDS
                 while time.monotonic() < deadline:
@@ -67,6 +73,8 @@ else:
 
             if not acknowledged:
                 print(f"Failed to deliver seq={sequence}")
+            else:
+                next_value += 1
 
             sequence = (sequence + 1) & 0xFF
             time.sleep(SEND_INTERVAL_SECONDS)
