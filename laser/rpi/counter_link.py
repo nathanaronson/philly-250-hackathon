@@ -20,11 +20,22 @@ from radio_protocol import (
 )
 
 
-BAUD_RATE = 115200
-ACK_TIMEOUT_SECONDS = 0.08
+BAUD_RATE = 57600
+ACK_TIMEOUT_SECONDS = 0.12
 MAX_RETRIES = 3
 HELLO_INTERVAL_SECONDS = 0.25
 COUNTER_RETRY_INTERVAL_SECONDS = 0.10
+
+
+def _encode_counter(value: int) -> bytes:
+    return int(value & 0xFFFFFFFF).to_bytes(4, "big")
+
+
+def _decode_counter(payload: bytes) -> int:
+    if len(payload) != 4:
+        raise ValueError("counter payload must be 4 bytes")
+
+    return int.from_bytes(payload, "big")
 
 
 def send_with_ack(
@@ -32,15 +43,15 @@ def send_with_ack(
     parser: PacketParser,
     packet_type: int,
     tx_sequence: int,
-    payload_text: str,
+    payload: bytes,
 ) -> bool:
-    packet = build_packet(packet_type, tx_sequence, payload_text.encode("ascii"))
+    packet = build_packet(packet_type, tx_sequence, payload)
 
     for attempt in range(1, MAX_RETRIES + 1):
         ser.write(packet)
         ser.flush()
         if packet_type == PACKET_TYPE_DATA:
-            print(f"[link] Sent seq={tx_sequence} attempt={attempt} payload={payload_text}")
+            print(f"[link] Sent seq={tx_sequence} attempt={attempt}")
 
         deadline = time.monotonic() + ACK_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -58,13 +69,13 @@ def send_with_ack(
                     ser.write(ack)
                     ser.flush()
 
-                    try:
-                        text = packet_in.payload.decode("ascii")
-                    except UnicodeDecodeError:
-                        continue
-
                     if packet_in.packet_type == PACKET_TYPE_DATA:
-                        print(f"[link] Deferred incoming payload while waiting for ACK: {text}")
+                        try:
+                            deferred_value = _decode_counter(packet_in.payload)
+                        except ValueError:
+                            continue
+
+                        print(f"[link] Deferred incoming value while waiting for ACK: {deferred_value}")
 
         if packet_type == PACKET_TYPE_DATA:
             print(f"[link] Retrying seq={tx_sequence}")
@@ -83,7 +94,7 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
 
     print(f"[{name}] Opening {port} at {BAUD_RATE} baud")
 
-    with serial.Serial(port, BAUD_RATE, timeout=0.01, write_timeout=0.10) as ser:
+    with serial.Serial(port, BAUD_RATE, timeout=0.005, write_timeout=0.10) as ser:
         time.sleep(0.25)
         ser.reset_input_buffer()
         ser.reset_output_buffer()
@@ -94,12 +105,18 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
             now = time.monotonic()
 
             if (not link_established) and now >= next_hello_deadline:
-                if send_with_ack(ser, packet_parser, PACKET_TYPE_HELLO, tx_sequence, ""):
+                if send_with_ack(ser, packet_parser, PACKET_TYPE_HELLO, tx_sequence, b""):
                     tx_sequence = (tx_sequence + 1) & 0xFF
                 next_hello_deadline = now + HELLO_INTERVAL_SECONDS
 
             if initiator and (not initial_counter_sent) and now >= next_counter_deadline:
-                if send_with_ack(ser, packet_parser, PACKET_TYPE_DATA, tx_sequence, str(next_value_to_send)):
+                if send_with_ack(
+                    ser,
+                    packet_parser,
+                    PACKET_TYPE_DATA,
+                    tx_sequence,
+                    _encode_counter(next_value_to_send),
+                ):
                     next_value_to_send += 2
                     tx_sequence = (tx_sequence + 1) & 0xFF
                     initial_counter_sent = True
@@ -122,12 +139,6 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
                 ser.write(ack)
                 ser.flush()
 
-                try:
-                    text = packet_in.payload.decode("ascii")
-                except UnicodeDecodeError:
-                    print(f"[{name}] Ignored invalid payload")
-                    continue
-
                 if packet_in.packet_type == PACKET_TYPE_HELLO:
                     continue
 
@@ -136,9 +147,9 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
                     continue
 
                 try:
-                    received_value = int(text)
+                    received_value = _decode_counter(packet_in.payload)
                 except ValueError:
-                    print(f"[{name}] Ignored invalid counter payload: {text}")
+                    print(f"[{name}] Ignored invalid counter payload")
                     continue
 
                 print(f"[{name}] Received value {received_value}")
@@ -152,7 +163,13 @@ def run_counter_node(port: str, name: str, start_value: int, initiator: bool) ->
                     )
                     continue
 
-                if send_with_ack(ser, packet_parser, PACKET_TYPE_DATA, tx_sequence, str(next_value_to_send)):
+                if send_with_ack(
+                    ser,
+                    packet_parser,
+                    PACKET_TYPE_DATA,
+                    tx_sequence,
+                    _encode_counter(next_value_to_send),
+                ):
                     next_value_to_send += 2
                     tx_sequence = (tx_sequence + 1) & 0xFF
                     initial_counter_sent = True
