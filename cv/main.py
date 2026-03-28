@@ -99,5 +99,6 @@ def reset():
 if __name__ == "__main__":
     t = threading.Thread(target=_capture_loop, daemon=True)
     t.start()
-    print("[main] Starting — open http://<this-device-ip>:5000 in a browser")
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    port = 8080
+    print(f"[main] Starting — open http://localhost:{port} in a browser")
+    app.run(host="0.0.0.0", port=port, threaded=True)
