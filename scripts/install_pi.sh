@@ -12,9 +12,11 @@ echo ">>> Installing system dependency for picamera2..."
 sudo apt update
 sudo apt install -y python3-picamera2
 
+echo ">>> Creating venv with access to system packages (needed for picamera2)..."
+uv venv --system-site-packages
+
 echo ">>> Installing Python dependencies via uv..."
-# --system-site-packages lets the venv see picamera2 (system-installed)
-uv sync --extra-index-url https://pypi.org/simple
+uv sync
 
 echo ""
 echo "Done! To run the detector:"
