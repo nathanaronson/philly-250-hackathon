@@ -15,6 +15,6 @@ if __name__ == "__main__":
     run_counter_node(
         port=_detect_usb_serial_port(),
         name="pi5",
-        start_value=1,
-        initiator=True,
+        start_value=2,
+        initiator=False,
     )

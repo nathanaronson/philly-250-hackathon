@@ -9,6 +9,6 @@ if __name__ == "__main__":
     run_counter_node(
         port=SERIAL_PORT,
         name="pi4",
-        start_value=2,
-        initiator=False,
+        start_value=1,
+        initiator=True,
     )
