@@ -41,19 +41,33 @@ def draw_detections(
     out = frame.copy()
     for obj in objects:
         d = obj.detection
-        if not obj.is_confirmed:
-            continue
+        center = (d.x + d.w // 2, d.y + d.h // 2)
 
-        if _is_mine(obj, clip_scores, mine_threshold):
+        if obj.is_confirmed and _is_mine(obj, clip_scores, mine_threshold):
             # Thin red box — web UI handles the alert, keep overlay clean
             cv2.rectangle(out, (d.x, d.y), (d.x + d.w, d.y + d.h), _RED, 2)
             # Small label above box, no filled background
             label = "THREAT"
-            (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN, 1.0, 1)
+            (_, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN, 1.0, 1)
             label_y = max(d.y - 4, lh + 2)
             cv2.putText(out, label, (d.x, label_y), cv2.FONT_HERSHEY_PLAIN, 1.0, _RED, 1)
-        else:
+            cv2.drawMarker(out, center, _RED, cv2.MARKER_CROSS, 18, 2)
+        elif obj.is_confirmed:
             cv2.rectangle(out, (d.x, d.y), (d.x + d.w, d.y + d.h), _DIM, 1)
+            cv2.drawMarker(out, center, _DIM, cv2.MARKER_CROSS, 16, 1)
+        else:
+            label = "ACQUIRING" if obj.age <= 2 else "TRACKING"
+            cv2.rectangle(out, (d.x, d.y), (d.x + d.w, d.y + d.h), _BLUE, 2)
+            cv2.putText(
+                out,
+                label,
+                (d.x, max(d.y - 4, 12)),
+                cv2.FONT_HERSHEY_PLAIN,
+                1.0,
+                _BLUE,
+                1,
+            )
+            cv2.drawMarker(out, center, _BLUE, cv2.MARKER_CROSS, 18, 2)
 
     return out
 
@@ -120,8 +134,6 @@ def render(
 ) -> np.ndarray:
     if not is_calibrated:
         return draw_calibrating(frame, calibration_progress)
-
-    mines = [o for o in objects if _is_mine(o, clip_scores, mine_threshold)]
 
     frame = draw_detections(frame, objects, clip_scores, mine_threshold)
     # draw_alert removed — browser UI handles threat overlays

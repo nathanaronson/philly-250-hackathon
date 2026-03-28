@@ -34,6 +34,7 @@ _tracker = ObjectTracker()
 _clip: CLIPClassifier | None = None   # loaded in background; None until ready
 _clip_scores: dict[int, float] = {}
 _mine_count: int = 0   # number of confirmed mines in current frame
+_object_count: int = 0
 
 
 def _load_clip():
@@ -44,7 +45,7 @@ def _load_clip():
 
 
 def _capture_loop():
-    global _latest_frame, _latest_mask, _detector, _tracker, _clip_scores, _mine_count
+    global _latest_frame, _latest_mask, _detector, _tracker, _clip_scores, _mine_count, _object_count
     camera = open_camera()
     _calibration_announced = False
 
@@ -104,6 +105,7 @@ def _capture_loop():
             _latest_frame = frame_jpeg.tobytes()
             _latest_mask = mask_bytes
             _mine_count = len(mines)
+            _object_count = len(objects)
 
 
 def _mjpeg(get_bytes):
@@ -502,9 +504,12 @@ def index():
   let prevMines = 0, prevCalibrated = false;
   setInterval(() => {
     fetch('/status').then(r => r.json()).then(data => {
+      const objects    = data.objects    || 0;
       const mines      = data.mines      || 0;
       const calibrated = data.calibrated || false;
       const progress   = data.progress   || 0;
+
+      statObjects.textContent = objects;
 
       if (!calibrated) {
         const pct = Math.round(progress * 100);
@@ -581,8 +586,10 @@ def frame():
 def status():
     with _lock:
         mines = _mine_count
+        objects = _object_count
         det = _detector
     return jsonify({
+        "objects": objects,
         "mines": mines,
         "calibrated": det.is_calibrated,
         "progress": det.calibration_progress,
@@ -607,11 +614,13 @@ def debug():
 
 @app.route("/reset")
 def reset():
-    global _detector, _tracker, _clip_scores
+    global _detector, _tracker, _clip_scores, _object_count, _mine_count
     with _lock:
         _detector = BackgroundDetector()
         _tracker = ObjectTracker()
         _clip_scores = {}
+        _object_count = 0
+        _mine_count = 0
     print("[main] Reset — keep scene empty for calibration.")
     return redirect("/")
 

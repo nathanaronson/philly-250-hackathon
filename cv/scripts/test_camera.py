@@ -9,6 +9,7 @@ sys.path.insert(0, ".")  # run from cv/
 
 from camera.capture import open_camera
 from detector.background import BackgroundDetector
+from detector.tracker import ObjectTracker
 from detector.display import render
 
 
@@ -28,10 +29,18 @@ def test_pipeline():
     print("\n--- Detection pipeline (5 frames) ---")
     cam = open_camera()
     det = BackgroundDetector()
+    trk = ObjectTracker()
     for i in range(5):
         ok, frame = cam.read()
         assert ok and frame is not None, f"Frame {i} failed"
-        display = render(frame, det.process(frame), det.is_calibrated, det.calibration_progress)
+        objects = trk.update(det.process(frame))
+        display = render(
+            frame,
+            objects,
+            clip_scores={},
+            is_calibrated=det.is_calibrated,
+            calibration_progress=det.calibration_progress,
+        )
         _, jpeg = cv2.imencode(".jpg", display)
         print(f"frame {i}: jpeg={len(jpeg.tobytes())} bytes  calibrated={det.is_calibrated}")
     cam.release()

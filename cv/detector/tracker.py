@@ -1,43 +1,23 @@
 """
-Velocity-based object tracker.
+Single-target tracker tuned for the demo.
 
-Each tracked object maintains a smoothed velocity estimate. Every frame we
-predict where it will be, then match predictions to new detections using IoU.
-This handles fast-moving objects (person walking across frame) much better
-than a pure centroid distance check.
-
-Flow per frame:
-  1. Predict each object's new position using its velocity
-  2. Match predictions → detections via best IoU
-  3. Update matched objects (refine velocity)
-  4. Age out missing objects after MAX_MISSING_FRAMES
-  5. Register unmatched detections as new objects
+The detector may still produce a few candidate blobs, but for the demo we only
+want one object to become "the mine": whichever new object appears and stays in
+view. This tracker keeps a single active target, smooths its box, and resists
+jumping to nearby noise.
 """
 
 from dataclasses import dataclass, field
 import math
+
+import config
 from detector.background import Detection
 
 
-# IoU threshold between predicted box and detection to count as a match
-IOU_MATCH_THRESHOLD = 0.05   # low — predictions may not overlap perfectly
-
-# If IoU fails, fall back to centroid distance (as fraction of object diagonal)
-MAX_MOVE_DIAG = 2.0
-
-# Velocity smoothing — higher = more inertia, slower to change direction
-VELOCITY_SMOOTH = 0.6
-
-# Frames an object can be missing before its track is dropped.
-# High value keeps mine tracks alive through brief occlusions / turbidity.
-MAX_MISSING_FRAMES = 60
-
-# Frames an object must be *consistently* visible before it is flagged as a threat.
-# Noise blobs vanish within a few frames; a real object persists. This eliminates flicker.
-CONFIRM_FRAMES = 20  # ~0.67s at 30fps — brief splashes / reflections never confirm
+MIN_MATCH_SCORE = 0.20
 
 
-def _iou(ax, ay, aw, ah, bx, by, bw, bh) -> float:
+def _iou(ax: int, ay: int, aw: int, ah: int, bx: int, by: int, bw: int, bh: int) -> float:
     ix1 = max(ax, bx)
     iy1 = max(ay, by)
     ix2 = min(ax + aw, bx + bw)
@@ -49,103 +29,148 @@ def _iou(ax, ay, aw, ah, bx, by, bw, bh) -> float:
     return inter / union if union > 0 else 0.0
 
 
-def _match_score(pred_x, pred_y, pred_w, pred_h, det: Detection) -> float:
+def _match_score(pred_x: int, pred_y: int, pred_w: int, pred_h: int, det: Detection) -> float:
     iou = _iou(pred_x, pred_y, pred_w, pred_h, det.x, det.y, det.w, det.h)
-    if iou >= IOU_MATCH_THRESHOLD:
-        return iou
 
-    # Centroid distance fallback
     pcx = pred_x + pred_w / 2
     pcy = pred_y + pred_h / 2
     dcx = det.x + det.w / 2
     dcy = det.y + det.h / 2
     dist = math.hypot(dcx - pcx, dcy - pcy)
-    diag = math.hypot(pred_w, pred_h)
-    if diag > 0 and dist < MAX_MOVE_DIAG * diag:
-        return 0.5 * (1.0 - dist / (MAX_MOVE_DIAG * diag))
+    diag = max(math.hypot(pred_w, pred_h), 1.0)
+    dist_score = max(0.0, 1.0 - dist / (config.TRACK_MAX_MOVE_DIAG * diag))
 
-    return 0.0
+    width_ratio = min(pred_w, det.w) / max(pred_w, det.w) if pred_w > 0 and det.w > 0 else 0.0
+    height_ratio = min(pred_h, det.h) / max(pred_h, det.h) if pred_h > 0 and det.h > 0 else 0.0
+    size_score = (width_ratio + height_ratio) / 2
+
+    return (0.5 * iou) + (0.35 * dist_score) + (0.15 * size_score)
 
 
 @dataclass
 class TrackedObject:
     id: int
     detection: Detection
-    vx: float = 0.0   # velocity in x (pixels/frame)
-    vy: float = 0.0   # velocity in y
-    age: int = 0
+    vx: float = 0.0
+    vy: float = 0.0
+    age: int = 1
     missing: int = 0
+    cx: float = field(init=False)
+    cy: float = field(init=False)
+    w: float = field(init=False)
+    h: float = field(init=False)
+
+    def __post_init__(self):
+        self.cx = self.detection.x + self.detection.w / 2
+        self.cy = self.detection.y + self.detection.h / 2
+        self.w = float(self.detection.w)
+        self.h = float(self.detection.h)
 
     @property
     def is_confirmed(self) -> bool:
-        """True once the object has been visible for CONFIRM_FRAMES consecutive frames.
-        Noise blobs disappear before this threshold; real mines persist and trip it."""
-        return self.age >= CONFIRM_FRAMES
+        return self.age >= config.TRACK_CONFIRM_FRAMES
 
-    def predicted_box(self):
-        """Predicted position next frame based on current velocity."""
-        return (
-            self.detection.x + int(self.vx),
-            self.detection.y + int(self.vy),
-            self.detection.w,
-            self.detection.h,
+    def predicted_box(self) -> tuple[int, int, int, int]:
+        return self._box_from_state(self.cx + self.vx, self.cy + self.vy, self.w, self.h)
+
+    def mark_missing(self):
+        self.cx += self.vx
+        self.cy += self.vy
+        self.missing += 1
+        self._sync_detection(
+            confidence=max(self.detection.confidence * 0.9, 0.0),
+            area=self.detection.area,
         )
 
     def update(self, det: Detection):
         new_cx = det.x + det.w / 2
-        old_cx = self.detection.x + self.detection.w / 2
         new_cy = det.y + det.h / 2
-        old_cy = self.detection.y + self.detection.h / 2
-        raw_vx = new_cx - old_cx
-        raw_vy = new_cy - old_cy
-        # Smooth velocity — don't react instantly to jitter
-        self.vx = VELOCITY_SMOOTH * self.vx + (1 - VELOCITY_SMOOTH) * raw_vx
-        self.vy = VELOCITY_SMOOTH * self.vy + (1 - VELOCITY_SMOOTH) * raw_vy
-        self.detection = det
+        raw_vx = new_cx - self.cx
+        raw_vy = new_cy - self.cy
+
+        self.vx = 0.65 * self.vx + 0.35 * raw_vx
+        self.vy = 0.65 * self.vy + 0.35 * raw_vy
+
+        self.cx = (
+            config.TRACK_POSITION_SMOOTHING * self.cx
+            + (1 - config.TRACK_POSITION_SMOOTHING) * new_cx
+        )
+        self.cy = (
+            config.TRACK_POSITION_SMOOTHING * self.cy
+            + (1 - config.TRACK_POSITION_SMOOTHING) * new_cy
+        )
+        self.w = (
+            config.TRACK_SIZE_SMOOTHING * self.w
+            + (1 - config.TRACK_SIZE_SMOOTHING) * det.w
+        )
+        self.h = (
+            config.TRACK_SIZE_SMOOTHING * self.h
+            + (1 - config.TRACK_SIZE_SMOOTHING) * det.h
+        )
+
         self.age += 1
         self.missing = 0
+        self._sync_detection(confidence=det.confidence, area=det.area)
+
+    def _sync_detection(self, confidence: float, area: int):
+        x, y, w, h = self._box_from_state(self.cx, self.cy, self.w, self.h)
+        self.detection = Detection(x=x, y=y, w=w, h=h, confidence=confidence, area=area)
+
+    @staticmethod
+    def _box_from_state(cx: float, cy: float, w: float, h: float) -> tuple[int, int, int, int]:
+        iw = max(int(round(w)), 1)
+        ih = max(int(round(h)), 1)
+        x = int(round(cx - iw / 2))
+        y = int(round(cy - ih / 2))
+        return x, y, iw, ih
 
 
 class ObjectTracker:
     def __init__(self):
-        self._objects: dict[int, TrackedObject] = {}
+        self._active: TrackedObject | None = None
         self._next_id = 0
 
     def update(self, detections: list[Detection]) -> list[TrackedObject]:
-        matched_ids: set[int] = set()
-        matched_det: set[int] = set()
+        if self._active is None:
+            best = self._select_primary_detection(detections)
+            if best is None:
+                return []
+            self._active = self._new_track(best)
+            return [self._active]
 
-        # Match each tracked object to its best detection using predicted position
-        for obj_id, obj in self._objects.items():
-            px, py, pw, ph = obj.predicted_box()
-            best_score = 0.0
-            best_idx = -1
-            for i, det in enumerate(detections):
-                if i in matched_det:
-                    continue
-                score = _match_score(px, py, pw, ph, det)
-                if score > best_score:
-                    best_score = score
-                    best_idx = i
+        best_idx, best_score = self._best_match(detections)
+        if best_idx >= 0 and best_score >= MIN_MATCH_SCORE:
+            self._active.update(detections[best_idx])
+            return [self._active]
 
-            if best_idx >= 0:
-                obj.update(detections[best_idx])
-                matched_ids.add(obj_id)
-                matched_det.add(best_idx)
+        self._active.mark_missing()
+        if self._active.missing > config.TRACK_MAX_MISSING_FRAMES:
+            replacement = self._select_primary_detection(detections)
+            self._active = self._new_track(replacement) if replacement is not None else None
 
-        # Age out missing objects
-        for obj_id, obj in list(self._objects.items()):
-            if obj_id not in matched_ids:
-                obj.missing += 1
-                if obj.missing > MAX_MISSING_FRAMES:
-                    del self._objects[obj_id]
+        return [self._active] if self._active is not None else []
 
-        # New objects from unmatched detections
+    def _best_match(self, detections: list[Detection]) -> tuple[int, float]:
+        if self._active is None:
+            return -1, 0.0
+
+        px, py, pw, ph = self._active.predicted_box()
+        best_idx = -1
+        best_score = 0.0
         for i, det in enumerate(detections):
-            if i not in matched_det:
-                self._objects[self._next_id] = TrackedObject(
-                    id=self._next_id, detection=det
-                )
-                self._next_id += 1
+            score = _match_score(px, py, pw, ph, det)
+            if score > best_score:
+                best_idx = i
+                best_score = score
+        return best_idx, best_score
 
-        return [o for o in self._objects.values() if o.missing == 0]
+    @staticmethod
+    def _select_primary_detection(detections: list[Detection]) -> Detection | None:
+        if not detections:
+            return None
+        return max(detections, key=lambda det: (det.confidence, -det.area))
+
+    def _new_track(self, det: Detection) -> TrackedObject:
+        obj = TrackedObject(id=self._next_id, detection=det)
+        self._next_id += 1
+        return obj
