@@ -103,3 +103,39 @@ Use this on the ground-computer side:
 cd laser/telemetry
 python imu_ground_receiver.py
 ```
+
+## Pi 4 <-> Pi 5 Counter Test
+
+Use these scripts to test two-way radio communication between the two Raspberry
+Pis using the shared packet/ACK protocol.
+
+Behavior:
+
+- Raspberry Pi 4 sends `1`
+- Raspberry Pi 5 receives and ACKs `1`, then sends `2`
+- Raspberry Pi 4 receives and ACKs `2`, then sends `3`
+- this continues forever
+
+### Which script runs where
+
+On the Raspberry Pi 4:
+
+```bash
+cd laser/rpi
+python pi4_counter_node.py
+```
+
+On the Raspberry Pi 5:
+
+```bash
+cd laser/rpi
+python pi5_counter_node.py
+```
+
+### Serial ports assumed by the wrappers
+
+- `pi4_counter_node.py` uses `/dev/ttyUSB0`
+- `pi5_counter_node.py` uses `/dev/serial0`
+
+If your radio appears on a different device, edit the `SERIAL_PORT` constant in
+the matching wrapper script.
