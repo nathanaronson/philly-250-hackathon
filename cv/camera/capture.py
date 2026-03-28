@@ -1,14 +1,17 @@
 """
 Camera capture abstraction.
 
-On a Raspberry Pi with the camera module attached, uses picamera2.
-On any other machine (dev laptop, etc.), falls back to OpenCV webcam
-so you can test the detection logic without Pi hardware.
+On Raspberry Pi OS Bookworm the CSI camera uses the libcamera stack which
+doesn't expose a standard V4L2 device OpenCV can read. Instead we spawn
+rpicam-vid as a subprocess and pipe raw YUV420 frames into OpenCV.
+
+On any other machine (dev laptop) we fall back to cv2.VideoCapture (webcam).
 """
 
-import sys
-import numpy as np
+import subprocess
+import time
 import cv2
+import numpy as np
 import config
 
 
@@ -22,24 +25,45 @@ def _is_raspberry_pi() -> bool:
 
 class PiCamera:
     def __init__(self):
-        from picamera2 import Picamera2
-        self._cam = Picamera2()
-        self._cam.configure(
-            self._cam.create_preview_configuration(
-                main={"size": (config.FRAME_WIDTH, config.FRAME_HEIGHT)}
-            )
-        )
-        self._cam.start()
+        self._w = config.FRAME_WIDTH
+        self._h = config.FRAME_HEIGHT
+        self._frame_bytes = self._w * self._h * 3 // 2  # YUV420 size
+
+        # Try rpicam-vid (Bookworm) then libcamera-vid (Bullseye)
+        for cmd in ("rpicam-vid", "libcamera-vid"):
+            try:
+                self._proc = subprocess.Popen(
+                    [
+                        cmd,
+                        "--width",     str(self._w),
+                        "--height",    str(self._h),
+                        "--framerate", str(config.FRAME_RATE),
+                        "--codec",     "yuv420",
+                        "--output",    "-",
+                        "--nopreview",
+                        "--timeout",   "0",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                print(f"[camera] Started {cmd} pipeline — waiting for autofocus...")
+                time.sleep(2)  # Camera Module 3 needs time to initialize autofocus
+                print("[camera] Ready")
+                return
+            except FileNotFoundError:
+                continue
+        raise RuntimeError("Neither rpicam-vid nor libcamera-vid found. Is the camera enabled?")
 
     def read(self) -> tuple[bool, np.ndarray]:
-        frame = self._cam.capture_array()
-        # picamera2 returns XRGB/BGR — ensure 3-channel BGR for OpenCV
-        if frame.ndim == 3 and frame.shape[2] == 4:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        raw = self._proc.stdout.read(self._frame_bytes)
+        if len(raw) < self._frame_bytes:
+            return False, None
+        yuv = np.frombuffer(raw, dtype=np.uint8).reshape((self._h * 3 // 2, self._w))
+        frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
         return True, frame
 
     def release(self):
-        self._cam.stop()
+        self._proc.terminate()
 
 
 class WebcamCamera:
@@ -50,6 +74,7 @@ class WebcamCamera:
         self._cap.set(cv2.CAP_PROP_FPS, config.FRAME_RATE)
         if not self._cap.isOpened():
             raise RuntimeError(f"Could not open webcam at index {index}")
+        print(f"[camera] Opened webcam at index {index}")
 
     def read(self) -> tuple[bool, np.ndarray]:
         return self._cap.read()
@@ -59,10 +84,6 @@ class WebcamCamera:
 
 
 def open_camera():
-    """Return the appropriate camera for the current platform."""
     if _is_raspberry_pi():
-        print("[camera] Detected Raspberry Pi — using picamera2")
         return PiCamera()
-    else:
-        print("[camera] Not a Pi — falling back to webcam (index 0) for dev/testing")
-        return WebcamCamera()
+    return WebcamCamera()

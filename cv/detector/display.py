@@ -1,91 +1,140 @@
 """
-Rendering / overlay logic. Kept separate from detection so the two can
-evolve independently (e.g. swap in a web UI without touching detector code).
+Rendering / overlay logic.
 """
 
+import time
 import cv2
 import numpy as np
 import config
-from detector.background import Detection
+from detector.tracker import TrackedObject
 
 
-# BGR color palette
-_GREEN  = (0, 210, 0)
-_YELLOW = (0, 200, 255)
-_RED    = (0, 60, 255)
-_WHITE  = (255, 255, 255)
-_BLACK  = (0, 0, 0)
-_GRAY   = (160, 160, 160)
+# BGR equivalents of the website's CSS variables
+_RED   = (68,  34,  255)   # --red:   #ff2244
+_GREEN = (136, 255,   0)   # --green: #00ff88
+_BLUE  = (255, 170,   0)   # --blue:  #00aaff
+_WHITE = (255, 255, 255)
+_BLACK = (  0,   0,   0)
+_DIM   = ( 82,  51,  22)   # --border: #163352 — barely-visible box
 
 
-def _confidence_color(conf: float) -> tuple[int, int, int]:
-    if conf >= config.HIGH_CONF:
-        return _GREEN
-    if conf >= config.MED_CONF:
-        return _YELLOW
-    return _RED
+def _is_mine(obj: TrackedObject, clip_scores: dict[int, float], mine_threshold: float) -> bool:
+    """A confirmed tracked object is flagged as a mine.
+    If CLIP is enabled and has scored it, the score must also pass the threshold.
+    """
+    if not obj.is_confirmed:
+        return False
+    if not config.ENABLE_CLIP:
+        return True  # any confirmed object in frame = mine
+    score = clip_scores.get(obj.id)
+    if score is None:
+        return False  # CLIP enabled but not scored yet — wait
+    return score >= mine_threshold
 
 
-def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
-    """Draw bounding boxes and confidence labels for each detection."""
+def draw_detections(
+    frame: np.ndarray,
+    objects: list[TrackedObject],
+    clip_scores: dict[int, float],
+    mine_threshold: float,
+) -> np.ndarray:
     out = frame.copy()
-    for det in detections:
-        color = _confidence_color(det.confidence)
-        cv2.rectangle(out, (det.x, det.y), (det.x + det.w, det.y + det.h), color, 2)
+    for obj in objects:
+        d = obj.detection
+        center = (d.x + d.w // 2, d.y + d.h // 2)
 
-        label = f"Object  {det.confidence:.0%}"
-        (lw, lh), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
-        label_y = max(det.y - 8, lh + 4)
-        cv2.rectangle(out, (det.x, label_y - lh - 4), (det.x + lw + 4, label_y + baseline), _BLACK, -1)
-        cv2.putText(out, label, (det.x + 2, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+        if obj.is_confirmed and _is_mine(obj, clip_scores, mine_threshold):
+            # Thin red box — web UI handles the alert, keep overlay clean
+            cv2.rectangle(out, (d.x, d.y), (d.x + d.w, d.y + d.h), _RED, 2)
+            # Small label above box, no filled background
+            label = "THREAT"
+            (_, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN, 1.0, 1)
+            label_y = max(d.y - 4, lh + 2)
+            cv2.putText(out, label, (d.x, label_y), cv2.FONT_HERSHEY_PLAIN, 1.0, _RED, 1)
+            cv2.drawMarker(out, center, _RED, cv2.MARKER_CROSS, 18, 2)
+        elif obj.is_confirmed:
+            cv2.rectangle(out, (d.x, d.y), (d.x + d.w, d.y + d.h), _DIM, 1)
+            cv2.drawMarker(out, center, _DIM, cv2.MARKER_CROSS, 16, 1)
+        else:
+            label = "ACQUIRING" if obj.age <= 2 else "TRACKING"
+            cv2.rectangle(out, (d.x, d.y), (d.x + d.w, d.y + d.h), _BLUE, 2)
+            cv2.putText(
+                out,
+                label,
+                (d.x, max(d.y - 4, 12)),
+                cv2.FONT_HERSHEY_PLAIN,
+                1.0,
+                _BLUE,
+                1,
+            )
+            cv2.drawMarker(out, center, _BLUE, cv2.MARKER_CROSS, 18, 2)
 
     return out
 
 
-def draw_status_bar(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
-    """Top status bar: CLEAR / OBJECT DETECTED + detection count."""
+def draw_alert(frame: np.ndarray, mine_objects: list[TrackedObject]) -> np.ndarray:
+    """Full-frame red pulsing border + large centered text when mines present."""
     out = frame.copy()
-    if detections:
-        best = detections[0].confidence
-        text = f"OBJECT DETECTED  ({len(detections)} blob{'s' if len(detections) > 1 else ''})  best: {best:.0%}"
-        color = _confidence_color(best)
+    h, w = out.shape[:2]
+
+    # Pulse border thickness using time so it visibly flashes
+    pulse = int(abs(time.monotonic() % 1.0 - 0.5) * 40) + 8
+    cv2.rectangle(out, (0, 0), (w - 1, h - 1), _RED, pulse)
+
+    # Large centered alert text
+    for i, line in enumerate([f"!! MINE DETECTED !!", f"{len(mine_objects)} object(s)"]):
+        scale = 1.6 if i == 0 else 0.9
+        thickness = 4 if i == 0 else 2
+        (tw, th), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_DUPLEX, scale, thickness)
+        x = (w - tw) // 2
+        y = h // 2 - 20 + i * (th + 20)
+        # Shadow
+        cv2.putText(out, line, (x + 3, y + 3), cv2.FONT_HERSHEY_DUPLEX, scale, _BLACK, thickness + 2)
+        cv2.putText(out, line, (x, y), cv2.FONT_HERSHEY_DUPLEX, scale, _RED, thickness)
+
+    return out
+
+
+def draw_status_bar(
+    frame: np.ndarray,
+    objects: list[TrackedObject],
+    clip_scores: dict[int, float],
+    mine_threshold: float,
+) -> np.ndarray:
+    out = frame.copy()
+    mines = [o for o in objects if _is_mine(o, clip_scores, mine_threshold)]
+
+    if mines:
+        best_score = max((clip_scores.get(o.id) or 0.0) for o in mines)
+        text = f"!! MINE DETECTED ({len(mines)}) conf:{best_score:.0%} !!"
+        bg, fg = _RED, _WHITE
     else:
         text = "CLEAR"
-        color = _GREEN
+        bg, fg = _BLACK, _GREEN
 
-    cv2.rectangle(out, (0, 0), (frame.shape[1], 44), _BLACK, -1)
-    cv2.putText(out, text, (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.85, color, 2)
-    return out
-
-
-def draw_calibrating(frame: np.ndarray, progress: float) -> np.ndarray:
-    """Overlay shown while the background model is still learning."""
-    out = frame.copy()
-    # Dim the frame
-    overlay = out.copy()
-    cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]), _BLACK, -1)
-    out = cv2.addWeighted(out, 0.5, overlay, 0.5, 0)
-
-    msg = "Calibrating... keep tank empty"
-    (tw, _), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
+    cv2.rectangle(out, (0, 0), (frame.shape[1], 50), bg, -1)
+    (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, 1.0, 2)
     cx = (frame.shape[1] - tw) // 2
-    cv2.putText(out, msg, (cx, frame.shape[0] // 2 - 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, _WHITE, 2)
-
-    # Progress bar
-    bar_x, bar_y, bar_w, bar_h = 80, frame.shape[0] // 2 + 10, frame.shape[1] - 160, 20
-    cv2.rectangle(out, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), _GRAY, 2)
-    fill = int(bar_w * progress)
-    if fill > 0:
-        cv2.rectangle(out, (bar_x, bar_y), (bar_x + fill, bar_y + bar_h), _GREEN, -1)
-
+    cv2.putText(out, text, (cx, 36), cv2.FONT_HERSHEY_DUPLEX, 1.0, fg, 2)
     return out
 
 
-def render(frame: np.ndarray, detections: list[Detection], is_calibrated: bool, calibration_progress: float) -> np.ndarray:
-    """Single call to produce the final display frame."""
+def draw_calibrating(frame: np.ndarray, _progress: float) -> np.ndarray:
+    # Plain dark background — web UI handles all calibration indicators
+    return np.full_like(frame, (30, 15, 6))
+
+
+def render(
+    frame: np.ndarray,
+    objects: list[TrackedObject],
+    clip_scores: dict[int, float],
+    is_calibrated: bool,
+    calibration_progress: float,
+    mine_threshold: float = 0.15,
+) -> np.ndarray:
     if not is_calibrated:
         return draw_calibrating(frame, calibration_progress)
-    frame = draw_detections(frame, detections)
-    frame = draw_status_bar(frame, detections)
+
+    frame = draw_detections(frame, objects, clip_scores, mine_threshold)
+    # draw_alert removed — browser UI handles threat overlays
     return frame

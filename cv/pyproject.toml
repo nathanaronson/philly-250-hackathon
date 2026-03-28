@@ -2,7 +2,12 @@
 name = "philly-250-hackathon"
 version = "0.1.0"
 description = "Real-time underwater object detection using background subtraction"
-requires-python = ">=3.12"
+requires-python = ">=3.9"
 dependencies = [
+    "flask>=3.1.3",
     "opencv-python>=4.13.0.92",
+    "pillow>=10.0.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "transformers>=4.40.0",
 ]
