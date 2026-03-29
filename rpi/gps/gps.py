@@ -2,7 +2,7 @@ import serial
 import pynmea2
 import time
 
-PORT = "/dev/serial0"
+PORT = "/dev/ttyAMA0"
 BAUD = 9600
 
 
