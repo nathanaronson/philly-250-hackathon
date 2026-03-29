@@ -15,7 +15,7 @@ void setup() {
 
   stopMotor();
   Serial.println("Motor control ready.");
-  Serial.println("Commands: f (forward), b (backward), s (stop)");
+  Serial.println("Commands: f (forward), b (backward), s (stop), r (brake/resist)");
 }
 
 void loop() {
@@ -35,6 +35,10 @@ void loop() {
         stopMotor();
         Serial.println("Stopped");
         break;
+      case 'r':
+        brakeMotor();
+        Serial.println("Braking");
+        break;
     }
   }
 }
@@ -52,4 +56,9 @@ void backward() {
 void stopMotor() {
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
+}
+
+void brakeMotor() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, HIGH);
 }
