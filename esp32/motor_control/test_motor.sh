@@ -16,11 +16,7 @@ time.sleep(2)
 
 print("Forward...")
 ser.write(b'f')
-time.sleep(2)
-
-print("Backward...")
-ser.write(b'b')
-time.sleep(2)
+time.sleep(30)
 
 print("Stop.")
 ser.write(b's')
