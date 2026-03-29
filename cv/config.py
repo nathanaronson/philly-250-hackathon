@@ -25,7 +25,7 @@ YOLO_THREADS      = 4      # onnxruntime intra-op threads (Pi 4 has 4 cores)
 # COCO classes to treat as a mine target (any match triggers detection).
 # 39 = bottle, 41 = cup  — combined catches more can orientations in one pass
 # 0  = person            — useful for indoor testing without a can
-YOLO_TARGET_CLASSES = [48, 32]  # 48 = orange, 32 = sports ball
+YOLO_TARGET_CLASSES = [48, 32, 0]  # 48 = orange, 32 = sports ball, 0 = person
 # Run a second inference on a vertically-flipped frame and merge results.
 # Directly fixes upside-down can detection. Costs one extra inference per frame.
 YOLO_FLIP_AUGMENT = True
