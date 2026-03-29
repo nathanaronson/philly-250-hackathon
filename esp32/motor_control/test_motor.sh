@@ -16,13 +16,14 @@ ser = serial.Serial(port, 115200)
 time.sleep(2)
 
 def getch():
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        return sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    with open('/dev/tty', 'r') as tty_fd:
+        fd = tty_fd.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            return tty_fd.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 COMMANDS = {
     'f': ('FORWARD',  b'f'),
