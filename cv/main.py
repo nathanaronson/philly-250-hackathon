@@ -15,6 +15,7 @@ Endpoints:
 
 import threading
 import time
+import random
 import cv2
 from flask import Flask, Response, redirect, jsonify
 import config
@@ -27,6 +28,8 @@ CLIPClassifier = None
 if config.ENABLE_CLIP:
     from detector.clip_classifier import CLIPClassifier, MINE_THRESHOLD  # noqa: F811
 from detector.display import render, _is_mine
+import imu as _imu
+import geo as _geo
 
 app = Flask(__name__)
 
@@ -43,6 +46,10 @@ _frame_total: int = 0
 _capture_fps: float = 0.0
 _latest_frame_seq: int = 0
 _latest_mask_seq: int = 0
+_lat: float = 39.9526
+_lon: float = -75.1652
+_gps_active: bool = False
+_threat_log: dict = {}          # {track_id: {lat, lon, ts}} — one entry per distinct mine
 
 
 def _load_clip():
@@ -52,9 +59,54 @@ def _load_clip():
         _clip = classifier
 
 
+def _gps_loop():
+    """Read GPS from serial (Raspberry Pi) or simulate drift as fallback."""
+    global _lat, _lon, _gps_active
+    try:
+        import serial
+        import pynmea2
+        with serial.Serial("/dev/ttyAMA0", 9600, timeout=1) as ser:
+            print("[gps] GPS serial connected")
+            _gps_active = True
+            while True:
+                try:
+                    line = ser.readline().decode("ascii", errors="replace").strip()
+                    if line.startswith(("$GPRMC", "$GNRMC")):
+                        msg = pynmea2.parse(line)
+                        if msg.status == "A":
+                            with _lock:
+                                _lat = msg.latitude
+                                _lon = msg.longitude
+                            # Nudge IMU yaw from GPS course-over-ground when moving
+                            try:
+                                cog = float(msg.true_course or 0)
+                                spd = float(msg.spd_over_grnd or 0)
+                                if spd > 0.3 and cog:
+                                    _imu.nudge_yaw(cog)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[gps] No GPS hardware ({e}) — using simulated drift")
+        while True:
+            with _lock:
+                _lat += (random.random() - 0.5) * 0.0002
+                _lon += (random.random() - 0.5) * 0.0002
+            time.sleep(3)
+
+
+def _meters_between(lat1, lon1, lat2, lon2):
+    import math
+    dlat = (lat2 - lat1) * 111320
+    dlon = (lon2 - lon1) * 111320 * math.cos(math.radians((lat1 + lat2) / 2))
+    return math.sqrt(dlat ** 2 + dlon ** 2)
+
+
 def _capture_loop():
     global _latest_frame, _latest_mask, _detector, _tracker, _clip_scores, _mine_count, _object_count
     global _frame_total, _capture_fps, _latest_frame_seq, _latest_mask_seq
+    global _threat_log
     import traceback
 
     camera = open_camera()
@@ -137,6 +189,32 @@ def _capture_loop():
                 _object_count = len(objects)
                 _frame_total += 1
                 _capture_fps = measured_fps
+                for mine_obj in mines:
+                    tid = mine_obj.id
+                    if tid not in _threat_log:
+                        # Project pixel centroid through camera model to get mine GPS
+                        d = mine_obj.detection
+                        pitch, roll, yaw = _imu.get_orientation()
+                        projected = _geo.project(
+                            d.x + d.w / 2, d.y + d.h / 2,
+                            _lat, _lon,
+                            pitch + config.CAMERA_MOUNT_PITCH_DEG,
+                            roll  + config.CAMERA_MOUNT_ROLL_DEG,
+                            yaw,
+                            config.CAMERA_HEIGHT_M,
+                            config.CAMERA_HFOV_DEG,
+                            config.CAMERA_VFOV_DEG,
+                            config.FRAME_WIDTH,
+                            config.FRAME_HEIGHT,
+                        )
+                        mine_lat, mine_lon = projected if projected else (_lat, _lon)
+                        # Proximity check: same physical mine with a new track ID
+                        too_close = any(
+                            _meters_between(mine_lat, mine_lon, e["lat"], e["lon"]) < 8.0
+                            for e in _threat_log.values()
+                        )
+                        if not too_close:
+                            _threat_log[tid] = {"lat": mine_lat, "lon": mine_lon, "ts": time.time()}
 
         except Exception:
             traceback.print_exc()
@@ -385,6 +463,16 @@ def index():
     .log-body::-webkit-scrollbar { width: 2px; }
     .log-body::-webkit-scrollbar-thumb { background: var(--border); }
 
+    /* Minimap */
+    #minimap {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #020a12;
+      border: 1px solid var(--border);
+      image-rendering: pixelated;
+    }
+
     /* Reset button */
     #reset-btn {
       background: transparent;
@@ -454,6 +542,11 @@ def index():
       <div class="stat-row"><span>FPS</span><span class="v" id="stat-fps">--</span></div>
     </div>
 
+    <div class="panel">
+      <div class="panel-title">// POSITION MAP</div>
+      <canvas id="minimap" width="180" height="120"></canvas>
+    </div>
+
     <div class="panel grow">
       <div class="panel-title">// EVENT LOG</div>
       <div class="log-body" id="log"></div>
@@ -481,6 +574,9 @@ def index():
   const statFps     = document.getElementById('stat-fps');
   const log         = document.getElementById('log');
   const clock       = document.getElementById('clock');
+  const minimap     = document.getElementById('minimap');
+  const mmCtx       = minimap.getContext('2d');
+  const MW = minimap.width, MH = minimap.height;
 
   // Audio
   const actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -502,14 +598,80 @@ def index():
   // Clock
   setInterval(() => { clock.textContent = new Date().toTimeString().slice(0,8); }, 1000);
 
-  // Fake coords drift
-  let lat = 39.9526, lon = -75.1652;
-  setInterval(() => {
-    lat += (Math.random() - 0.5) * 0.0001;
-    lon += (Math.random() - 0.5) * 0.0001;
-    document.getElementById('coords').textContent =
-      'LAT: ' + lat.toFixed(4) + '   LON: ' + lon.toFixed(4);
-  }, 2000);
+  // Minimap state
+  let currentPos = null;
+  let threatPoints = [];
+
+  function drawMinimap() {
+    mmCtx.fillStyle = '#020a12';
+    mmCtx.fillRect(0, 0, MW, MH);
+
+    const allPts = currentPos ? [...threatPoints, currentPos] : [...threatPoints];
+    if (allPts.length === 0) {
+      mmCtx.fillStyle = 'rgba(45,80,112,0.4)';
+      mmCtx.font = '9px Courier New';
+      mmCtx.textAlign = 'center';
+      mmCtx.fillText('NO FIX', MW/2, MH/2);
+      return;
+    }
+
+    // Compute bounds
+    let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+    for (const p of allPts) {
+      minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat);
+      minLon = Math.min(minLon, p.lon); maxLon = Math.max(maxLon, p.lon);
+    }
+    // Ensure a minimum range (~100m) so single-point view isn't degenerate
+    const minRange = 0.0009;
+    if (maxLat - minLat < minRange) { const m = (maxLat+minLat)/2; minLat=m-minRange/2; maxLat=m+minRange/2; }
+    if (maxLon - minLon < minRange) { const m = (maxLon+minLon)/2; minLon=m-minRange/2; maxLon=m+minRange/2; }
+    // Padding
+    const pl = (maxLat-minLat)*0.18, pn = (maxLon-minLon)*0.18;
+    minLat-=pl; maxLat+=pl; minLon-=pn; maxLon+=pn;
+
+    function toXY(lat, lon) {
+      return [
+        (lon-minLon)/(maxLon-minLon)*MW,
+        MH - (lat-minLat)/(maxLat-minLat)*MH,
+      ];
+    }
+
+    // Grid
+    mmCtx.strokeStyle = 'rgba(22,51,82,0.5)';
+    mmCtx.lineWidth = 0.5;
+    for (let i=1; i<4; i++) {
+      mmCtx.beginPath(); mmCtx.moveTo(MW*i/4,0); mmCtx.lineTo(MW*i/4,MH); mmCtx.stroke();
+      mmCtx.beginPath(); mmCtx.moveTo(0,MH*i/4); mmCtx.lineTo(MW,MH*i/4); mmCtx.stroke();
+    }
+
+    // Threat dots (red, persist)
+    for (const p of threatPoints) {
+      const [x, y] = toXY(p.lat, p.lon);
+      mmCtx.beginPath(); mmCtx.arc(x, y, 6, 0, Math.PI*2);
+      mmCtx.strokeStyle = 'rgba(255,34,68,0.35)'; mmCtx.lineWidth = 4; mmCtx.stroke();
+      mmCtx.beginPath(); mmCtx.arc(x, y, 3.5, 0, Math.PI*2);
+      mmCtx.fillStyle = '#ff2244'; mmCtx.fill();
+    }
+
+    // Current position (green)
+    if (currentPos) {
+      const [x, y] = toXY(currentPos.lat, currentPos.lon);
+      mmCtx.beginPath(); mmCtx.arc(x, y, 8, 0, Math.PI*2);
+      mmCtx.strokeStyle = 'rgba(0,255,136,0.3)'; mmCtx.lineWidth = 3; mmCtx.stroke();
+      mmCtx.beginPath(); mmCtx.arc(x, y, 4, 0, Math.PI*2);
+      mmCtx.fillStyle = '#00ff88'; mmCtx.fill();
+    }
+  }
+
+  // Fetch persisted threats from server every 2s
+  function refreshThreats() {
+    fetch('/threats').then(r => r.json()).then(data => {
+      threatPoints = data;
+      drawMinimap();
+    }).catch(() => {});
+  }
+  setInterval(refreshThreats, 2000);
+  refreshThreats();
 
   // Log
   let logCount = 0;
@@ -539,6 +701,15 @@ def index():
       const fps        = data.fps        || 0;
       const calibrated = data.calibrated || false;
       const progress   = data.progress   || 0;
+      const lat        = data.lat;
+      const lon        = data.lon;
+
+      if (lat != null && lon != null) {
+        document.getElementById('coords').textContent =
+          'LAT: ' + lat.toFixed(4) + '   LON: ' + lon.toFixed(4);
+        currentPos = { lat, lon };
+        drawMinimap();
+      }
 
       statObjects.textContent = objects;
       statFrames.textContent = frames;
@@ -623,6 +794,8 @@ def status():
         frames = _frame_total
         fps = _capture_fps
         det = _detector
+        lat = _lat
+        lon = _lon
     return jsonify({
         "objects": objects,
         "mines": mines,
@@ -630,7 +803,16 @@ def status():
         "fps": fps,
         "calibrated": det.is_calibrated,
         "progress": det.calibration_progress,
+        "lat": lat,
+        "lon": lon,
     })
+
+
+@app.route("/threats")
+def threats():
+    with _lock:
+        log = list(_threat_log.values())
+    return jsonify(log)
 
 
 @app.route("/stream")
@@ -673,6 +855,8 @@ if __name__ == "__main__":
         threading.Thread(target=_load_clip, daemon=True).start()
     else:
         print("[main] CLIP disabled (set ENABLE_CLIP=True in config.py to enable)")
+    threading.Thread(target=_imu.imu_loop, daemon=True).start()
+    threading.Thread(target=_gps_loop, daemon=True).start()
     threading.Thread(target=_capture_loop, daemon=True).start()
     port = 8080
     print(f"[main] Starting — open http://localhost:{port}")

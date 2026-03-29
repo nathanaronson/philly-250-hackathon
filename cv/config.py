@@ -30,3 +30,14 @@ TRACK_MAX_DIST_FRAC     = 0.35
 TRACK_MIN_IOU           = 0.05
 TRACK_POSITION_SMOOTHING = 0.6
 TRACK_SIZE_SMOOTHING    = 0.7
+
+# --- Camera geometry for mine geo-positioning ---
+# Measure CAMERA_HEIGHT_M from the lens to the water surface.
+# CAMERA_MOUNT_PITCH_DEG is the physical tilt of the camera below horizontal
+# (e.g. -45 means pointing 45° downward); IMU pitch is added on top of this.
+# Pi Camera v2 FoVs; adjust if using a different lens.
+CAMERA_HEIGHT_M        =  0.5    # metres above water surface
+CAMERA_HFOV_DEG        = 62.2    # horizontal field of view
+CAMERA_VFOV_DEG        = 48.8    # vertical field of view
+CAMERA_MOUNT_PITCH_DEG = -45.0   # static camera tilt from level (negative = down)
+CAMERA_MOUNT_ROLL_DEG  =  0.0    # static camera roll from level
