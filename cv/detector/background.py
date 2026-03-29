@@ -86,47 +86,60 @@ class BackgroundDetector:
     def calibration_progress(self) -> float:
         return 1.0
 
+    def _infer(self, frame: np.ndarray, fh: int, fw: int):
+        """Run one YOLO pass. Returns (x1, y1, w_, h_, conf) arrays or None."""
+        sz = config.YOLO_IMGSZ
+        resized = cv2.resize(frame, (sz, sz), interpolation=cv2.INTER_LINEAR)
+        blob = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        blob = blob.transpose(2, 0, 1)[np.newaxis]
+
+        raw = BackgroundDetector._session.run(None, {self._input_name: blob})[0]
+        preds = raw[0].T                          # [N, 84]
+        cx, cy, bw, bh = preds[:,0], preds[:,1], preds[:,2], preds[:,3]
+        class_scores = preds[:, 4:]               # [N, 80]
+
+        # Confidence = max score across all target classes
+        classes = list(config.YOLO_TARGET_CLASSES)
+        conf = class_scores[:, classes].max(axis=1)
+        keep = conf >= config.YOLO_CONF
+        if not np.any(keep):
+            return None
+
+        sx, sy = fw / sz, fh / sz
+        x1 = (cx[keep] - bw[keep] / 2) * sx
+        y1 = (cy[keep] - bh[keep] / 2) * sy
+        w_ = bw[keep] * sx
+        h_ = bh[keep] * sy
+        return x1, y1, w_, h_, conf[keep]
+
     def process(self, frame: np.ndarray) -> list[Detection]:
         fh, fw = frame.shape[:2]
-        sz = config.YOLO_IMGSZ
 
-        # ── Preprocess ────────────────────────────────────────────────────
-        resized = cv2.resize(frame, (sz, sz), interpolation=cv2.INTER_LINEAR)
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        blob = rgb.astype(np.float32) / 255.0
-        blob = blob.transpose(2, 0, 1)[np.newaxis]   # [1, 3, sz, sz]
+        # ── Inference (original + optional vertical flip) ─────────────────
+        results = [self._infer(frame, fh, fw)]
+        if config.YOLO_FLIP_AUGMENT:
+            flip_result = self._infer(cv2.flip(frame, 0), fh, fw)
+            if flip_result is not None:
+                x1f, y1f, wf, hf, cf = flip_result
+                # Transform y back to original frame coords
+                results.append((x1f, fh - y1f - hf, wf, hf, cf))
 
-        # ── Inference ─────────────────────────────────────────────────────
-        raw = BackgroundDetector._session.run(None, {self._input_name: blob})[0]
-        # raw: [1, 84, N]  — 84 = 4 box coords + 80 class scores
-
-        preds = raw[0].T   # [N, 84]
-        cx, cy, bw, bh = preds[:, 0], preds[:, 1], preds[:, 2], preds[:, 3]
-        class_scores = preds[:, 4:]  # [N, 80]
-
-        person_conf = class_scores[:, 0]  # COCO class 0 = person
-        keep = person_conf >= config.YOLO_CONF
-        if not np.any(keep):
+        # ── Merge all candidates ──────────────────────────────────────────
+        parts = [r for r in results if r is not None]
+        if not parts:
             self.debug_mask = np.zeros((fh, fw), dtype=np.uint8)
             return []
 
-        cx, cy, bw, bh = cx[keep], cy[keep], bw[keep], bh[keep]
-        person_conf = person_conf[keep]
+        x1 = np.concatenate([p[0] for p in parts])
+        y1 = np.concatenate([p[1] for p in parts])
+        w_ = np.concatenate([p[2] for p in parts])
+        h_ = np.concatenate([p[3] for p in parts])
+        conf = np.concatenate([p[4] for p in parts])
 
-        # Scale from model input coords back to original frame coords
-        sx, sy = fw / sz, fh / sz
-        x1 = (cx - bw / 2) * sx
-        y1 = (cy - bh / 2) * sy
-        w_  = bw * sx
-        h_  = bh * sy
-
-        # ── NMS ───────────────────────────────────────────────────────────
+        # ── NMS across merged candidates ──────────────────────────────────
         boxes_xywh = np.stack([x1, y1, w_, h_], axis=1).tolist()
         indices = cv2.dnn.NMSBoxes(
-            boxes_xywh,
-            person_conf.tolist(),
-            config.YOLO_CONF,
-            config.YOLO_IOU,
+            boxes_xywh, conf.tolist(), config.YOLO_CONF, config.YOLO_IOU,
         )
 
         debug = np.zeros((fh, fw), dtype=np.uint8)
@@ -139,7 +152,7 @@ class BackgroundDetector:
             ibh = max(int(h_[idx]), 1)
             detections.append(Detection(
                 x=bx, y=by, w=ibw, h=ibh,
-                confidence=float(person_conf[idx]),
+                confidence=float(conf[idx]),
                 area=ibw * ibh,
             ))
             cv2.rectangle(debug, (bx, by), (bx + ibw, by + ibh), 255, -1)
