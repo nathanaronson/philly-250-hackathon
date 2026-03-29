@@ -3,7 +3,8 @@ import time
 import struct
 
 # LSM6DSO I2C address (SDO pin low = 0x6A, high = 0x6B)
-I2C_ADDR = 0x6A
+# Change to 0x6B if i2cdetect shows 6b instead of 6a
+I2C_ADDR = 0x6B
 
 # Registers
 WHO_AM_I  = 0x0F
