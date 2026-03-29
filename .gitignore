@@ -2,13 +2,30 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
+dist/
 .mypy_cache/
+.ruff_cache/
 
 # Virtual environment
 .venv/
 
+# uv
+.uv/
+
+# Environment / credentials
+.env
+*.env.local
+
 # Saved frames from pressing S in the app
 frame_*.png
+
+# Arduino build artifacts
+build/
+*.elf
+*.bin
+*.hex
+*.map
 
 # OS
 .DS_Store
@@ -18,3 +35,4 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+*.swo
