@@ -82,11 +82,13 @@ def track_position(bus, bias, interval=0.02):
             ax -= bx
             ay -= by
 
-            # Deadband: ignore noise below 0.02 m/s²
-            if abs(ax) < 0.02:
+            # Deadband: if acceleration is near zero, assume stationary and zero velocity
+            if abs(ax) < 0.05:
                 ax = 0.0
-            if abs(ay) < 0.02:
+                vx = 0.0
+            if abs(ay) < 0.05:
                 ay = 0.0
+                vy = 0.0
 
             vx += ax * dt
             vy += ay * dt
